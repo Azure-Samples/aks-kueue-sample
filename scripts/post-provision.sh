@@ -25,14 +25,9 @@ step()  { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # azd sets these from Bicep outputs (camelCase → UPPER_SNAKE via azd convention)
 CLUSTER_NAME="${aksClusterName:-aks-ml-demo}"
 RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-rg-aks-ml-demo}"
-# MIG_MODE is the single source of truth: none, MIG1g, MIG2g, MIG3g, etc.
+# MIG_MODE: none, MIG1g, MIG2g, MIG3g, etc.
 # azd stores Bicep outputs as camelCase env vars (e.g. migMode="MIG3g")
 MIG_MODE="${migMode:-none}"
-if [[ "$MIG_MODE" == "none" ]]; then
-  MIG_STRATEGY="none"
-else
-  MIG_STRATEGY="mixed"
-fi
 KUEUE_VERSION="0.16.1"
 
 # ============================================================================
@@ -53,45 +48,66 @@ kubectl wait --for=condition=Ready node --all --timeout=600s
 ok "All nodes ready"
 
 # ============================================================================
-# Install GPU software stack
+# Install NVIDIA GPU Operator (always — manages drivers, device plugin, DCGM)
+# Follows: https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/deploying-azure-nd-h100-v5-instances-in-aks-with-nvidia-mig-gpu-slicing/4384080
 # ============================================================================
-if [[ "$MIG_STRATEGY" != "none" ]]; then
-  # MIG mode: AKS manages drivers + MIG partitions.
-  # Install standalone NVIDIA device plugin with migStrategy for MIG-aware reporting.
-  # (GPU Operator is NOT used — it conflicts with AKS-managed MIG drivers)
-  step "Installing NVIDIA device plugin (MIG strategy: ${MIG_STRATEGY})"
+step "Installing NVIDIA GPU Operator"
 
-  helm repo add nvdp https://nvidia.github.io/k8s-device-plugin 2>/dev/null || true
-  helm repo update nvdp
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>/dev/null || true
+helm repo update nvidia
 
-  helm upgrade --install nvdp nvdp/nvidia-device-plugin \
-    --version=0.17.0 \
-    --set migStrategy="$MIG_STRATEGY" \
-    --set gfd.enabled=true \
-    --set securityContext.privileged=true \
-    --namespace nvidia-device-plugin \
-    --create-namespace \
-    --wait --timeout 120s
+GPU_OPERATOR_ARGS=(
+  --namespace gpu-operator
+  --create-namespace
+  --set operator.runtimeClass=nvidia-container-runtime
+)
 
-  ok "NVIDIA device plugin installed (MIG strategy: ${MIG_STRATEGY})"
+# MIG: enable MIG Manager + set device plugin strategy
+if [[ "$MIG_MODE" != "none" ]]; then
+  GPU_OPERATOR_ARGS+=(
+    --set mig.strategy=mixed
+    --set migManager.enabled=true
+  )
+fi
 
-else
-  # Non-MIG mode: GPU Operator manages drivers + device plugin + toolkit
-  step "Installing NVIDIA GPU Operator"
+helm upgrade --install gpu-operator nvidia/gpu-operator \
+  "${GPU_OPERATOR_ARGS[@]}" \
+  --wait --timeout 600s
 
-  helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>/dev/null || true
-  helm repo update nvidia
+ok "GPU Operator installed"
 
-  helm upgrade --install gpu-operator nvidia/gpu-operator \
-    --namespace gpu-operator \
-    --create-namespace \
-    --set driver.enabled=true \
-    --set devicePlugin.enabled=true \
-    --set toolkit.enabled=true \
-    --set operator.runtimeClass=nvidia-container-runtime \
-    --wait --timeout 600s
+# ============================================================================
+# Configure MIG via node labels (GPU Operator MIG Manager handles partitioning)
+# ============================================================================
+if [[ "$MIG_MODE" != "none" ]]; then
+  # Map migMode to the mig-parted config label
+  case "$MIG_MODE" in
+    MIG1g) MIG_CONFIG="all-1g.10gb" ;;
+    MIG2g) MIG_CONFIG="all-2g.20gb" ;;
+    MIG3g) MIG_CONFIG="all-3g.40gb" ;;
+    MIG4g) MIG_CONFIG="all-4g.40gb" ;;
+    MIG7g) MIG_CONFIG="all-7g.80gb" ;;
+    *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+  esac
 
-  ok "GPU Operator installed"
+  step "Configuring MIG: ${MIG_CONFIG}"
+
+  for node in $(kubectl get nodes -l gpu-type=nvidia-h100 -o jsonpath='{.items[*].metadata.name}'); do
+    info "Labeling $node with nvidia.com/mig.config=${MIG_CONFIG}"
+    kubectl label node "$node" nvidia.com/mig.config="$MIG_CONFIG" --overwrite
+  done
+
+  info "Waiting for MIG Manager to partition GPUs (nodes may briefly go NotReady)..."
+  sleep 60
+  kubectl wait --for=condition=Ready node -l gpu-type=nvidia-h100 --timeout=300s
+  ok "MIG configured: ${MIG_CONFIG}"
+
+  # Verify MIG slices are visible
+  info "Checking MIG resources on nodes..."
+  kubectl get nodes -o json | jq -r '
+    .items[] |
+    select(.status.allocatable | keys[] | startswith("nvidia.com/mig")) |
+    "\(.metadata.name): \(.status.allocatable | with_entries(select(.key | startswith("nvidia.com/mig"))))"'
 fi
 
 # ============================================================================
@@ -206,8 +222,8 @@ description: "Low priority for batch/exploratory jobs"
 EOF
 info "WorkloadPriorityClasses created"
 
-# Kueue CRs based on MIG strategy
-if [ "$MIG_STRATEGY" = "none" ]; then
+# Kueue CRs based on MIG mode
+if [ "$MIG_MODE" = "none" ]; then
   cat <<EOF | kubectl apply -f -
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor

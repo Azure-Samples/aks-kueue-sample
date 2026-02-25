@@ -18,10 +18,6 @@ param gpuVmSize string = 'Standard_ND96isr_H100_v5'
 @description('Number of GPU nodes')
 param gpuNodeCount int = 1
 
-@description('MIG mode: none (whole GPUs), MIG1g (7 slices/GPU), MIG2g (3 slices), MIG3g (2 slices), MIG7g (1 full)')
-@allowed(['none', 'MIG1g', 'MIG2g', 'MIG3g', 'MIG4g', 'MIG7g'])
-param migMode string = 'none'
-
 @description('System node pool VM size')
 param systemVmSize string = 'Standard_D4s_v5'
 
@@ -52,7 +48,6 @@ module gpuNodePool 'modules/gpu-nodepool.bicep' = {
     clusterName: aksCluster.outputs.aksName
     gpuVmSize: gpuVmSize
     gpuNodeCount: gpuNodeCount
-    gpuInstanceProfile: migMode
   }
 }
 
@@ -61,4 +56,3 @@ module gpuNodePool 'modules/gpu-nodepool.bicep' = {
 output aksClusterName string = aksCluster.outputs.aksName
 output aksClusterId string = aksCluster.outputs.aksId
 output nodeResourceGroup string = aksCluster.outputs.aksNodeResourceGroupName
-output migMode string = migMode

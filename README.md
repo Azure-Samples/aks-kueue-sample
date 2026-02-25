@@ -83,7 +83,13 @@ azd up
 
 Available profiles: `MIG1g` (7/GPU), `MIG2g` (3/GPU), `MIG3g` (2/GPU), `MIG7g` (full GPU).
 
-> MIG profile **cannot be changed** after creation. Use `azd down` first if switching.
+MIG profiles can be changed on a running cluster by relabeling the GPU node:
+
+```bash
+kubectl label node <gpu-node> nvidia.com/mig.config=all-1g.10gb --overwrite
+```
+
+The GPU Operator reconfigures the GPUs in ~90 seconds. No redeployment needed.
 
 Then run the MIG-specific demo:
 

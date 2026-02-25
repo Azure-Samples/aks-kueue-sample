@@ -1,6 +1,6 @@
 // GPU node pool for ND-series H100 instances
-// GPU drivers managed by NVIDIA GPU Operator — skip AKS built-in driver
-// MIG partitioning set at creation time via gpuInstanceProfile (immutable)
+// GPU drivers managed by NVIDIA GPU Operator — always skip AKS built-in driver
+// MIG partitioning handled dynamically by GPU Operator's MIG Manager (not gpuInstanceProfile)
 
 @description('Name of the existing AKS cluster')
 param clusterName string
@@ -10,10 +10,6 @@ param gpuVmSize string
 
 @description('Number of GPU nodes')
 param gpuNodeCount int
-
-@description('MIG GPU instance profile: none, MIG1g, MIG2g, MIG3g, MIG4g, MIG7g')
-@allowed(['none', 'MIG1g', 'MIG2g', 'MIG3g', 'MIG4g', 'MIG7g'])
-param gpuInstanceProfile string = 'none'
 
 resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-01-01' existing = {
   name: clusterName
@@ -35,10 +31,9 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2025
     nodeLabels: {
       'gpu-type': 'nvidia-h100'
     }
-    gpuProfile: gpuInstanceProfile == 'none' ? {
+    gpuProfile: {
       driver: 'None'
-    } : null
-    gpuInstanceProfile: gpuInstanceProfile != 'none' ? gpuInstanceProfile : null
+    }
   }
 }
 

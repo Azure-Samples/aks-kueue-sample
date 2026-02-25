@@ -27,8 +27,7 @@ step()  { echo -e "\n${BOLD}${CYAN}==> Step $1: $2${NC}"; }
 RESOURCE_GROUP="rg-aks-ml-demo"
 LOCATION="southafricanorth"
 CLUSTER_NAME="aks-ml-demo"
-MIG_STRATEGY="none"
-GPU_INSTANCE_PROFILE="none"
+MIG_MODE="none"
 KUEUE_VERSION="0.16.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -38,8 +37,7 @@ while [[ $# -gt 0 ]]; do
     --resource-group) RESOURCE_GROUP="$2"; shift 2 ;;
     --location)       LOCATION="$2"; shift 2 ;;
     --cluster-name)   CLUSTER_NAME="$2"; shift 2 ;;
-    --mig-strategy)          MIG_STRATEGY="$2"; shift 2 ;;
-    --gpu-instance-profile)  GPU_INSTANCE_PROFILE="$2"; shift 2 ;;
+    --mig-mode)       MIG_MODE="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -47,19 +45,13 @@ while [[ $# -gt 0 ]]; do
       echo "  --resource-group  NAME   Resource group name (default: rg-aks-ml-demo)"
       echo "  --location        REGION Azure region (default: southafricanorth)"
       echo "  --cluster-name    NAME   AKS cluster name (default: aks-ml-demo)"
-      echo "  --mig-strategy           STR  Device plugin reporting: none|single|mixed (default: none)"
-      echo "  --gpu-instance-profile   STR  MIG partition: none|MIG1g|MIG2g|MIG3g|MIG4g|MIG7g (default: none)"
+      echo "  --mig-mode        MODE   MIG mode: none|MIG1g|MIG2g|MIG3g|MIG7g (default: none)"
       echo "  -h, --help               Show this help"
       exit 0
       ;;
     *) error "Unknown option: $1"; exit 1 ;;
   esac
 done
-
-if [[ "$MIG_STRATEGY" != "none" && "$MIG_STRATEGY" != "single" && "$MIG_STRATEGY" != "mixed" ]]; then
-  error "Invalid MIG strategy: $MIG_STRATEGY (must be none, single, or mixed)"
-  exit 1
-fi
 
 # ============================================================================
 # Cost Warning
@@ -125,7 +117,7 @@ if [[ ! -f "$BICEP_FILE" ]]; then
   exit 1
 fi
 
-info "MIG strategy: ${BOLD}${MIG_STRATEGY}${NC}, GPU instance profile: ${BOLD}${GPU_INSTANCE_PROFILE}${NC}"
+info "MIG mode: ${BOLD}${MIG_MODE}${NC}"
 info "Starting Bicep deployment..."
 
 az deployment group create \
@@ -134,8 +126,6 @@ az deployment group create \
   --parameters \
     clusterName="$CLUSTER_NAME" \
     location="$LOCATION" \
-    migStrategy="$MIG_STRATEGY" \
-    gpuInstanceProfile="$GPU_INSTANCE_PROFILE" \
   --output none
 
 ok "AKS cluster and GPU node pool deployed"
@@ -169,16 +159,13 @@ helm repo update nvidia
 GPU_OPERATOR_ARGS=(
   --namespace gpu-operator
   --create-namespace
-  --set driver.enabled=true
-  --set devicePlugin.enabled=true
-  --set toolkit.enabled=true
   --set operator.runtimeClass=nvidia-container-runtime
 )
 
-if [[ "$MIG_STRATEGY" != "none" ]]; then
+if [[ "$MIG_MODE" != "none" ]]; then
   GPU_OPERATOR_ARGS+=(
-    --set mig.strategy="$MIG_STRATEGY"
-    --set migManager.enabled=false
+    --set mig.strategy=mixed
+    --set migManager.enabled=true
   )
 fi
 
@@ -186,7 +173,28 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   "${GPU_OPERATOR_ARGS[@]}" \
   --wait --timeout 600s
 
-ok "GPU Operator installed (MIG strategy: ${MIG_STRATEGY})"
+ok "GPU Operator installed"
+
+# Configure MIG if enabled
+if [[ "$MIG_MODE" != "none" ]]; then
+  case "$MIG_MODE" in
+    MIG1g) MIG_CONFIG="all-1g.10gb" ;;
+    MIG2g) MIG_CONFIG="all-2g.20gb" ;;
+    MIG3g) MIG_CONFIG="all-3g.40gb" ;;
+    MIG4g) MIG_CONFIG="all-4g.40gb" ;;
+    MIG7g) MIG_CONFIG="all-7g.80gb" ;;
+    *)     error "Unknown MIG mode: $MIG_MODE"; exit 1 ;;
+  esac
+
+  step "4b" "Configure MIG: ${MIG_CONFIG}"
+  for node in $(kubectl get nodes -l gpu-type=nvidia-h100 -o jsonpath='{.items[*].metadata.name}'); do
+    kubectl label node "$node" nvidia.com/mig.config="$MIG_CONFIG" --overwrite
+  done
+  info "Waiting for MIG Manager to partition GPUs..."
+  sleep 60
+  kubectl wait --for=condition=Ready node -l gpu-type=nvidia-h100 --timeout=300s
+  ok "MIG configured: ${MIG_CONFIG}"
+fi
 
 # ============================================================================
 # Step 5: Install Kueue via Helm
@@ -300,8 +308,8 @@ description: "Low priority for batch/exploratory jobs"
 EOF
 info "WorkloadPriorityClasses created"
 
-# Apply Kueue CRs based on MIG strategy
-if [ "$MIG_STRATEGY" = "none" ]; then
+# Apply Kueue CRs based on MIG mode
+if [ "$MIG_MODE" = "none" ]; then
   # Whole GPU mode
   cat <<EOF | kubectl apply -f -
 apiVersion: kueue.x-k8s.io/v1beta2
@@ -398,24 +406,25 @@ EOF
   ok "Kueue config applied (whole GPU mode)"
 
 else
-  # MIG mode
+  # MIG mode — dynamic based on MIG_MODE
+  case "$MIG_MODE" in
+    MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.10gb"; SLICES_PER_GPU=7 ;;
+    MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.20gb"; SLICES_PER_GPU=3 ;;
+    MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.40gb"; SLICES_PER_GPU=2 ;;
+    MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.40gb"; SLICES_PER_GPU=1 ;;
+    MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.80gb"; SLICES_PER_GPU=1 ;;
+    *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+  esac
+  TOTAL_SLICES=$((8 * SLICES_PER_GPU))
+  TEAM_QUOTA=$((TOTAL_SLICES / 4))
+  SHARED_QUOTA=$((TOTAL_SLICES / 2))
+  FLAVOR_NAME="h100-mig-$(echo "$MIG_MODE" | tr '[:upper:]' '[:lower:]')"
+
   cat <<EOF | kubectl apply -f -
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
-  name: h100-mig-3g40gb
-spec:
-  nodeLabels:
-    gpu-type: "nvidia-h100"
-  tolerations:
-    - key: "nvidia.com/gpu"
-      operator: "Exists"
-      effect: "NoSchedule"
----
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: ResourceFlavor
-metadata:
-  name: h100-mig-1g10gb
+  name: ${FLAVOR_NAME}
 spec:
   nodeLabels:
     gpu-type: "nvidia-h100"
@@ -444,30 +453,17 @@ spec:
     borrowWithinCohort:
       policy: LowerPriority
   resourceGroups:
-    - coveredResources: ["cpu", "memory", "nvidia.com/mig-3g.40gb", "nvidia.com/mig-1g.10gb"]
+    - coveredResources: ["cpu", "memory", "${MIG_RESOURCE}"]
       flavors:
-        - name: h100-mig-3g40gb
+        - name: ${FLAVOR_NAME}
           resources:
             - name: "cpu"
               nominalQuota: 48
             - name: "memory"
               nominalQuota: "512Gi"
-            - name: "nvidia.com/mig-3g.40gb"
-              nominalQuota: 4
-              borrowingLimit: 8
-            - name: "nvidia.com/mig-1g.10gb"
-              nominalQuota: 0
-        - name: h100-mig-1g10gb
-          resources:
-            - name: "cpu"
-              nominalQuota: 48
-            - name: "memory"
-              nominalQuota: "512Gi"
-            - name: "nvidia.com/mig-3g.40gb"
-              nominalQuota: 0
-            - name: "nvidia.com/mig-1g.10gb"
-              nominalQuota: 4
-              borrowingLimit: 4
+            - name: "${MIG_RESOURCE}"
+              nominalQuota: ${TEAM_QUOTA}
+              borrowingLimit: ${SHARED_QUOTA}
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -484,30 +480,17 @@ spec:
     borrowWithinCohort:
       policy: LowerPriority
   resourceGroups:
-    - coveredResources: ["cpu", "memory", "nvidia.com/mig-3g.40gb", "nvidia.com/mig-1g.10gb"]
+    - coveredResources: ["cpu", "memory", "${MIG_RESOURCE}"]
       flavors:
-        - name: h100-mig-3g40gb
+        - name: ${FLAVOR_NAME}
           resources:
             - name: "cpu"
               nominalQuota: 48
             - name: "memory"
               nominalQuota: "512Gi"
-            - name: "nvidia.com/mig-3g.40gb"
-              nominalQuota: 4
-              borrowingLimit: 8
-            - name: "nvidia.com/mig-1g.10gb"
-              nominalQuota: 0
-        - name: h100-mig-1g10gb
-          resources:
-            - name: "cpu"
-              nominalQuota: 48
-            - name: "memory"
-              nominalQuota: "512Gi"
-            - name: "nvidia.com/mig-3g.40gb"
-              nominalQuota: 0
-            - name: "nvidia.com/mig-1g.10gb"
-              nominalQuota: 4
-              borrowingLimit: 4
+            - name: "${MIG_RESOURCE}"
+              nominalQuota: ${TEAM_QUOTA}
+              borrowingLimit: ${SHARED_QUOTA}
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -517,32 +500,19 @@ spec:
   cohortName: ml-org
   namespaceSelector: {}
   resourceGroups:
-    - coveredResources: ["cpu", "memory", "nvidia.com/mig-3g.40gb", "nvidia.com/mig-1g.10gb"]
+    - coveredResources: ["cpu", "memory", "${MIG_RESOURCE}"]
       flavors:
-        - name: h100-mig-3g40gb
+        - name: ${FLAVOR_NAME}
           resources:
             - name: "cpu"
               nominalQuota: 96
             - name: "memory"
               nominalQuota: "1024Gi"
-            - name: "nvidia.com/mig-3g.40gb"
-              nominalQuota: 8
-              lendingLimit: 8
-            - name: "nvidia.com/mig-1g.10gb"
-              nominalQuota: 0
-        - name: h100-mig-1g10gb
-          resources:
-            - name: "cpu"
-              nominalQuota: 96
-            - name: "memory"
-              nominalQuota: "1024Gi"
-            - name: "nvidia.com/mig-3g.40gb"
-              nominalQuota: 0
-            - name: "nvidia.com/mig-1g.10gb"
-              nominalQuota: 8
-              lendingLimit: 8
+            - name: "${MIG_RESOURCE}"
+              nominalQuota: ${SHARED_QUOTA}
+              lendingLimit: ${SHARED_QUOTA}
 EOF
-  ok "Kueue config applied (MIG mode)"
+  ok "Kueue config applied (MIG mode: ${MIG_MODE}, resource: ${MIG_RESOURCE})"
 fi
 
 # LocalQueues (same for both modes)
