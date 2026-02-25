@@ -1,0 +1,71 @@
+# =============================================================================
+# Coder v2 Helm Chart Values — Demo Configuration
+# =============================================================================
+# This configuration uses Coder's embedded PostgreSQL database, which is
+# suitable for demos and ephemeral environments only.
+#
+# ⚠️  PRODUCTION NOTE: For production deployments, you MUST set
+#     CODER_PG_CONNECTION_URL to an external PostgreSQL instance (e.g.,
+#     Azure Database for PostgreSQL Flexible Server). The embedded DB does
+#     not persist data across pod restarts.
+#
+# Helm chart: https://helm.coder.com/v2
+# Install:
+#   helm repo add coder-v2 https://helm.coder.com/v2
+#   helm upgrade --install coder coder-v2/coder \
+#     --namespace coder --create-namespace \
+#     -f coder/values.yaml --wait --timeout 300s
+# =============================================================================
+
+coder:
+  # ---------------------------------------------------------------------------
+  # Environment variables for the Coder control plane
+  # ---------------------------------------------------------------------------
+  env:
+    # Access URL — the external URL users will use to reach Coder.
+    # For demo: override at deploy time with the actual LoadBalancer IP or
+    # use `kubectl port-forward` and set to http://localhost:8080.
+    - name: CODER_ACCESS_URL
+      value: "http://coder.demo.local"
+
+    # No CODER_PG_CONNECTION_URL is set — Coder will automatically use its
+    # embedded PostgreSQL database. This is intentional for the demo.
+    # For production, uncomment and configure:
+    # - name: CODER_PG_CONNECTION_URL
+    #   valueFrom:
+    #     secretKeyRef:
+    #       name: coder-db-credentials
+    #       key: url
+
+  # ---------------------------------------------------------------------------
+  # Replica count — single replica is sufficient for a demo
+  # ---------------------------------------------------------------------------
+  replicaCount: 1
+
+  # ---------------------------------------------------------------------------
+  # Resource limits — lightweight for the control plane
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  # ---------------------------------------------------------------------------
+  # Service configuration — LoadBalancer for easy demo access
+  # ---------------------------------------------------------------------------
+  service:
+    type: LoadBalancer
+
+  # ---------------------------------------------------------------------------
+  # Node scheduling — run on the system pool, NOT on GPU nodes
+  # Coder is a control plane component; it does not need GPU resources.
+  # ---------------------------------------------------------------------------
+  nodeSelector:
+    kubernetes.io/os: linux
+  # No GPU tolerations — ensures Coder stays on the system pool.
+  # The GPU node pool has a taint (nvidia.com/gpu=present:NoSchedule)
+  # that Coder pods will not tolerate.
+  tolerations: []

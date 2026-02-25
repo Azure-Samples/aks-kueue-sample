@@ -1,0 +1,91 @@
+# Whole-GPU mode: Cohort + 3 ClusterQueues
+# 8 GPUs total on 1× ND96isr_H100_v5 node
+#   team-a-cq: 2 guaranteed, borrow up to 4
+#   team-b-cq: 2 guaranteed, borrow up to 4
+#   shared-cq: 4 burst pool, lends all 4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Cohort
+metadata:
+  name: ml-org
+spec: {}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: team-a-cq
+spec:
+  cohortName: ml-org
+  namespaceSelector:
+    matchLabels:
+      team: "a"
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+    borrowWithinCohort:
+      policy: LowerPriority
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: h100-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: 24
+              borrowingLimit: 48
+            - name: "memory"
+              nominalQuota: 128Gi
+              borrowingLimit: 256Gi
+            - name: "nvidia.com/gpu"
+              nominalQuota: 2
+              borrowingLimit: 4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: team-b-cq
+spec:
+  cohortName: ml-org
+  namespaceSelector:
+    matchLabels:
+      team: "b"
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+    borrowWithinCohort:
+      policy: LowerPriority
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: h100-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: 24
+              borrowingLimit: 48
+            - name: "memory"
+              nominalQuota: 128Gi
+              borrowingLimit: 256Gi
+            - name: "nvidia.com/gpu"
+              nominalQuota: 2
+              borrowingLimit: 4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: shared-cq
+spec:
+  cohortName: ml-org
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: h100-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: 48
+              lendingLimit: 48
+            - name: "memory"
+              nominalQuota: 256Gi
+              lendingLimit: 256Gi
+            - name: "nvidia.com/gpu"
+              nominalQuota: 4
+              lendingLimit: 4

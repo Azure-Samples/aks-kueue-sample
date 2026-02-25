@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: team-b-job-low
+  namespace: team-b
+  labels:
+    kueue.x-k8s.io/queue-name: team-b-lq
+    kueue.x-k8s.io/priority-class: low-priority
+spec:
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        app: team-b-job-low
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: gpu-workload
+          image: nvidia/cuda:12.4.0-base-ubuntu22.04
+          command: ["bash", "-c", "nvidia-smi && sleep 600"]
+          resources:
+            requests:
+              nvidia.com/gpu: 2
+            limits:
+              nvidia.com/gpu: 2

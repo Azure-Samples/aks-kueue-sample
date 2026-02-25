@@ -1,0 +1,20 @@
+name: aks-ml-demo
+metadata:
+  template: aks-ml-kueue@1.0.0
+
+infra:
+  provider: bicep
+  path: infra
+
+services: {}
+
+hooks:
+  preprovision:
+    shell: sh
+    run: |
+      # azd doesn't export .env values as OS env vars for Bicep's readEnvironmentVariable().
+      # This hook ensures they're available. Runs in the same process as provision.
+      echo "migMode is: ${migMode:-none}"
+  postprovision:
+    shell: sh
+    run: scripts/post-provision.sh

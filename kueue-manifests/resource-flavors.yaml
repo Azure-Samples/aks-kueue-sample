@@ -1,0 +1,12 @@
+# ResourceFlavor for whole (non-MIG) H100 GPUs
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: h100-flavor
+spec:
+  nodeLabels:
+    gpu-type: nvidia-h100
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule

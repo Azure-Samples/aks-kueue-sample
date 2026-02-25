@@ -1,0 +1,33 @@
+# NVIDIA GPU Operator Helm values — MIG single strategy
+# All GPUs partitioned identically: 7× 1g.10gb per GPU
+# Usage: helm upgrade --install gpu-operator nvidia/gpu-operator \
+#          -n gpu-operator --create-namespace -f values-mig-single.yaml
+driver:
+  enabled: true
+
+mig:
+  strategy: single
+
+migManager:
+  enabled: true
+  config:
+    name: mig-parted-config
+
+devicePlugin:
+  enabled: true
+
+toolkit:
+  enabled: true
+
+migParted:
+  config:
+    name: mig-parted-config
+    data:
+      config.yaml: |
+        version: v1
+        mig-configs:
+          all-1g.10gb:
+            - devices: all
+              mig-enabled: true
+              mig-devices:
+                "1g.10gb": 7

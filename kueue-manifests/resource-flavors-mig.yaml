@@ -1,0 +1,27 @@
+# ResourceFlavors for MIG-partitioned H100 GPUs
+# These are reference copies — actual CRs are applied inline by post-provision.sh
+# Uses gpu-type label (works for both single and mixed MIG strategies)
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: h100-mig-3g40gb
+spec:
+  nodeLabels:
+    gpu-type: nvidia-h100
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: h100-mig-1g10gb
+spec:
+  nodeLabels:
+    gpu-type: nvidia-h100
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule

@@ -1,0 +1,18 @@
+# LocalQueues — namespace-scoped submission points for each team
+# Users submit jobs with annotation: kueue.x-k8s.io/queue-name: <localqueue-name>
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: team-a-lq
+  namespace: team-a
+spec:
+  clusterQueue: team-a-cq
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: team-b-lq
+  namespace: team-b
+spec:
+  clusterQueue: team-b-cq

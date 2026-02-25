@@ -1,0 +1,101 @@
+# MIG mode: Cohort + 3 ClusterQueues
+# 1× ND96isr_H100_v5 = 8 GPUs, mixed strategy per GPU: 2× 3g.40gb + 1× 1g.10gb
+# Totals: 16 large (3g.40gb) + 8 small (1g.10gb) slices
+#   team-a-cq: 4 large + 2 small guaranteed, borrow 8 large + 4 small
+#   team-b-cq: 4 large + 2 small guaranteed, borrow 8 large + 4 small
+#   shared-cq: 8 large + 4 small burst pool, lends all
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Cohort
+metadata:
+  name: ml-org
+spec: {}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: team-a-cq
+spec:
+  cohortName: ml-org
+  namespaceSelector:
+    matchLabels:
+      team: "a"
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+    borrowWithinCohort:
+      policy: LowerPriority
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/mig-3g.40gb", "nvidia.com/mig-1g.10gb"]
+      flavors:
+        - name: h100-mig-3g40gb
+          resources:
+            - name: "cpu"
+              nominalQuota: 24
+              borrowingLimit: 48
+            - name: "memory"
+              nominalQuota: 128Gi
+              borrowingLimit: 256Gi
+            - name: "nvidia.com/mig-3g.40gb"
+              nominalQuota: 4
+              borrowingLimit: 8
+            - name: "nvidia.com/mig-1g.10gb"
+              nominalQuota: 2
+              borrowingLimit: 4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: team-b-cq
+spec:
+  cohortName: ml-org
+  namespaceSelector:
+    matchLabels:
+      team: "b"
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+    borrowWithinCohort:
+      policy: LowerPriority
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/mig-3g.40gb", "nvidia.com/mig-1g.10gb"]
+      flavors:
+        - name: h100-mig-3g40gb
+          resources:
+            - name: "cpu"
+              nominalQuota: 24
+              borrowingLimit: 48
+            - name: "memory"
+              nominalQuota: 128Gi
+              borrowingLimit: 256Gi
+            - name: "nvidia.com/mig-3g.40gb"
+              nominalQuota: 4
+              borrowingLimit: 8
+            - name: "nvidia.com/mig-1g.10gb"
+              nominalQuota: 2
+              borrowingLimit: 4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: shared-cq
+spec:
+  cohortName: ml-org
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/mig-3g.40gb", "nvidia.com/mig-1g.10gb"]
+      flavors:
+        - name: h100-mig-3g40gb
+          resources:
+            - name: "cpu"
+              nominalQuota: 48
+              lendingLimit: 48
+            - name: "memory"
+              nominalQuota: 256Gi
+              lendingLimit: 256Gi
+            - name: "nvidia.com/mig-3g.40gb"
+              nominalQuota: 8
+              lendingLimit: 8
+            - name: "nvidia.com/mig-1g.10gb"
+              nominalQuota: 4
+              lendingLimit: 4
