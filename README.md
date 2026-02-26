@@ -31,28 +31,8 @@ AKS Cluster
 | [Azure Developer CLI (azd)](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/) | 1.23+ |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | 1.29+ |
 | [Helm](https://helm.sh/docs/intro/install/) | 3.14+ |
-| [gum](https://github.com/charmbracelet/gum) | For interactive demo scripts (see below) |
+| [gum](https://github.com/charmbracelet/gum#installation) | For interactive demo scripts |
 | GPU quota | ND H100 v5 family: ≥96 vCPUs in your target region |
-
-### Installing gum
-
-The demo walkthrough scripts use [gum](https://github.com/charmbracelet/gum) for styled terminal output. Install it for your platform:
-
-```bash
-# macOS
-brew install gum
-
-# Linux
-sudo apt install gum        # Debian/Ubuntu (via charm repo)
-# or
-sudo yum install gum        # Fedora/RHEL
-# or download from https://github.com/charmbracelet/gum/releases
-
-# Windows
-winget install charmbracelet.gum
-# or
-scoop install gum
-```
 
 ## Quick Start
 
@@ -106,19 +86,6 @@ Then run the MIG-specific demo:
 | `3g.40gb` | 40 GB | 3/7 SMs | 2 | `nvidia.com/mig-3g.40gb` |
 | `7g.80gb` | 80 GB | 7/7 SMs | 1 | `nvidia.com/mig-7g.80gb` |
 
-## Demo Walkthrough
-
-The `scripts/demo-walkthrough.sh` script is interactive — it pauses between each step so you can narrate:
-
-1. **Cluster overview** — nodes and GPU resources
-2. **Kueue config** — ClusterQueues, LocalQueues, Cohort
-3. **Submit Team A low-priority job** → admitted against guaranteed quota
-4. **Submit Team A high-priority job** → borrows from shared pool
-5. **Observe borrowing** — usage exceeds nominal quota
-6. **Submit Team B high-priority job** → triggers preemption
-7. **Observe preemption** — Team A's borrowed workload evicted
-8. **Clean up**
-
 ## Coder Workspaces
 
 After deployment, Coder is accessible via its LoadBalancer IP:
@@ -131,18 +98,6 @@ kubectl port-forward -n coder svc/coder 8080:80
 ```
 
 Create a workspace from the `ml-workspace` template — it includes Python, PyTorch, CUDA, and `kubectl` with pre-loaded job templates.
-
-## Kueue Concepts
-
-| Concept | Description |
-|---|---|
-| **ClusterQueue** | Cluster-scoped resource budget with quotas and preemption (admin-managed) |
-| **LocalQueue** | Namespace-scoped submission point (user-facing) |
-| **Cohort** | Group of ClusterQueues that can borrow/lend resources |
-| **ResourceFlavor** | Abstraction for a compute type (e.g., whole H100, MIG 3g.40gb) |
-| **Preemption** | Eviction of lower-priority workloads when resources are reclaimed |
-
-> See the [Kueue documentation](https://kueue.sigs.k8s.io/) for full details.
 
 ## File Structure
 
@@ -207,19 +162,5 @@ kubectl get nodes --show-labels | grep mig
 - [ND H100 v5 with MIG on AKS](https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/deploying-azure-nd-h100-v5-instances-in-aks-with-nvidia-mig-gpu-slicing/4384080)
 - [Coder v2](https://coder.com/docs/install/kubernetes)
 - [Azure Developer CLI](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/)
-
-## Production Considerations
-
-This is a demo. For production, add:
-
-| Area | What to Add |
-|---|---|
-| **Networking** | Private cluster, Azure Firewall, NSGs |
-| **Identity** | Entra ID + Kubernetes RBAC, Workload Identity |
-| **Database** | External PostgreSQL for Coder |
-| **Monitoring** | Prometheus/Grafana for GPU utilization |
-| **Storage** | Azure Blob CSI + Azure Files for training data |
-| **Autoscaling** | Cluster autoscaler (0→N GPU nodes) |
-| **Secrets** | Azure Key Vault with CSI driver |
 
 > ⚠️ **GPU nodes are expensive. Always run `azd down --force --purge` when done.**
