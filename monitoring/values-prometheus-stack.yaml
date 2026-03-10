@@ -1,0 +1,33 @@
+# kube-prometheus-stack Helm values for demo observability
+# Ephemeral (no persistence), short retention, Alertmanager disabled
+# Grafana sidecar auto-loads dashboards from labeled ConfigMaps
+
+prometheus:
+  prometheusSpec:
+    retention: 2h
+    # Discover ServiceMonitors in ALL namespaces (gpu-operator, kueue-system)
+    # without requiring the Helm release label
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    # Explicitly allow cross-namespace ServiceMonitor discovery
+    serviceMonitorNamespaceSelector: {}
+    podMonitorNamespaceSelector: {}
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+    # No persistent storage — ephemeral for demo
+    storageSpec: {}
+
+alertmanager:
+  enabled: false
+
+grafana:
+  adminPassword: "demo"
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      folderAnnotation: grafana_folder
+      searchNamespace: ALL
+  persistence:
+    enabled: false

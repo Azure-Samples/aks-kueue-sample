@@ -59,6 +59,13 @@ if [[ "$response" != "yes" ]]; then
 fi
 
 info "Deleting resource group '${RESOURCE_GROUP}'..."
+
+# Clean up monitoring namespace if it exists (before RG deletion)
+if kubectl get namespace monitoring &>/dev/null 2>&1; then
+  info "Deleting monitoring namespace..."
+  kubectl delete namespace monitoring --timeout=60s 2>/dev/null || warn "Could not delete monitoring namespace (cluster may already be gone)"
+fi
+
 az group delete --name "$RESOURCE_GROUP" --yes --no-wait
 
 ok "Resource group deletion initiated (running in background)."
