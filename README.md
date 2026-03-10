@@ -121,17 +121,26 @@ azd up
 - **kube-prometheus-stack** in the `monitoring` namespace (Prometheus, Grafana, kube-state-metrics)
 - **DCGM Exporter ServiceMonitor** — scrapes GPU metrics (utilization, memory, power, temperature)
 - **Kueue ServiceMonitor** — scrapes queue metrics (pending workloads, admission latency, preemptions)
-- **Grafana dashboard** "GPU Cluster Overview" with 4 panels:
-  - GPU utilization per namespace
-  - Queue depth and admission wait times per ClusterQueue
-  - Preemption events over time
-  - GPU-hours consumed per namespace
+- Two **Grafana dashboards** auto-provisioned under the "GPU Observability" folder:
+
+| Dashboard | Panels | Purpose |
+|---|---|---|
+| **GPU Cluster Overview** | GPU utilization per namespace, queue depth & wait times, preemption events, GPU-hours per namespace | Multitenancy view — ties GPU usage to Kueue queues |
+| **NVIDIA DCGM Exporter** | Per-GPU temperature, power draw, SM/memory clocks, memory utilization, SM utilization, encoder/decoder utilization, PCIe errors, energy consumption | Hardware view — per-GPU detail for all 8 H100s |
 
 ### Access Grafana
 
 ```bash
 kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
 # Open http://localhost:3000 — login: admin / demo
+```
+
+### Run the monitoring demo
+
+Submit jobs that light up all dashboard panels (queue pressure, preemption, GPU utilization):
+
+```bash
+./scripts/demo-monitoring.sh
 ```
 
 ## File Structure
@@ -158,7 +167,8 @@ kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
     ├── deploy.sh               # Standalone deploy (--monitoring flag)
     ├── teardown.sh             # Resource cleanup
     ├── demo-walkthrough.sh     # Interactive multitenancy demo
-    └── demo-mig-walkthrough.sh # MIG-specific demo
+    ├── demo-mig-walkthrough.sh # MIG-specific demo
+    └── demo-monitoring.sh      # Monitoring dashboard demo
 ```
 
 ## Troubleshooting
