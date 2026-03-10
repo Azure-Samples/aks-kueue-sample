@@ -491,7 +491,7 @@ if [[ "$ENABLE_MONITORING" == "true" ]]; then
     --wait --timeout 300s
   ok "Kueue upgraded with Prometheus ServiceMonitor"
 
-  # 4. Create Grafana dashboard ConfigMap from JSON file
+  # 4. Create Grafana dashboard ConfigMaps from JSON files
   kubectl create configmap gpu-cluster-overview-dashboard \
     --from-file=gpu-cluster-overview.json="${PROJECT_DIR}/monitoring/dashboards/gpu-cluster-overview.json" \
     --namespace monitoring \
@@ -500,7 +500,17 @@ if [[ "$ENABLE_MONITORING" == "true" ]]; then
     -n monitoring grafana_dashboard=1 --overwrite
   kubectl annotate configmap gpu-cluster-overview-dashboard \
     -n monitoring grafana_folder="GPU Observability" --overwrite
-  ok "Grafana dashboard provisioned"
+
+  kubectl create configmap dcgm-exporter-dashboard \
+    --from-file=dcgm-exporter-dashboard.json="${PROJECT_DIR}/monitoring/dashboards/dcgm-exporter-dashboard.json" \
+    --namespace monitoring \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label configmap dcgm-exporter-dashboard \
+    -n monitoring grafana_dashboard=1 --overwrite
+  kubectl annotate configmap dcgm-exporter-dashboard \
+    -n monitoring grafana_folder="GPU Observability" --overwrite
+
+  ok "Grafana dashboards provisioned"
 
   # 5. Wait for Prometheus and Grafana to be ready
   info "Waiting for monitoring pods..."
