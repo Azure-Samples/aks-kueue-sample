@@ -17,3 +17,6 @@
 # Compiled ARM templates (generated from Bicep)
 main.json
 infra/main.json
+.opencode
+.github
+openspec

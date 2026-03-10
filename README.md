@@ -99,6 +99,41 @@ kubectl port-forward -n coder svc/coder 8080:80
 
 Create a workspace from the `ml-workspace` template — it includes Python, PyTorch, CUDA, and `kubectl` with pre-loaded job templates.
 
+## Monitoring (Optional)
+
+Deploy a Prometheus + Grafana observability stack to visualize GPU utilization, Kueue queue health, and preemption events.
+
+### Enable with azd
+
+```bash
+azd env set enableMonitoring true
+azd up
+```
+
+### Enable with standalone deploy
+
+```bash
+./scripts/deploy.sh --monitoring
+```
+
+### What gets deployed
+
+- **kube-prometheus-stack** in the `monitoring` namespace (Prometheus, Grafana, kube-state-metrics)
+- **DCGM Exporter ServiceMonitor** — scrapes GPU metrics (utilization, memory, power, temperature)
+- **Kueue ServiceMonitor** — scrapes queue metrics (pending workloads, admission latency, preemptions)
+- **Grafana dashboard** "GPU Cluster Overview" with 4 panels:
+  - GPU utilization per namespace
+  - Queue depth and admission wait times per ClusterQueue
+  - Preemption events over time
+  - GPU-hours consumed per namespace
+
+### Access Grafana
+
+```bash
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+# Open http://localhost:3000 — login: admin / demo
+```
+
 ## File Structure
 
 ```
@@ -109,12 +144,19 @@ Create a workspace from the `ml-workspace` template — it includes Python, PyTo
 │   └── modules/
 │       ├── aks-cluster.bicep
 │       └── gpu-nodepool.bicep
+├── monitoring/                 # Observability stack configs (optional)
+│   ├── values-prometheus-stack.yaml
+│   ├── values-gpu-operator-monitoring.yaml
+│   └── dashboards/
+│       └── gpu-cluster-overview.json
 ├── kueue-manifests/            # Reference Kueue CRs (applied by post-provision hook)
 ├── gpu-operator/               # GPU Operator Helm values for MIG modes
 ├── coder/                      # Coder Helm values + workspace template
 ├── demo-jobs/                  # Sample GPU jobs for both teams
 └── scripts/
     ├── post-provision.sh       # azd hook: installs Helm charts + Kueue config
+    ├── deploy.sh               # Standalone deploy (--monitoring flag)
+    ├── teardown.sh             # Resource cleanup
     ├── demo-walkthrough.sh     # Interactive multitenancy demo
     └── demo-mig-walkthrough.sh # MIG-specific demo
 ```

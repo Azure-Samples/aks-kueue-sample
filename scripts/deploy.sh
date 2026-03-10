@@ -29,6 +29,7 @@ LOCATION="southafricanorth"
 CLUSTER_NAME="aks-ml-demo"
 MIG_MODE="none"
 KUEUE_VERSION="0.16.1"
+ENABLE_MONITORING=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --location)       LOCATION="$2"; shift 2 ;;
     --cluster-name)   CLUSTER_NAME="$2"; shift 2 ;;
     --mig-mode)       MIG_MODE="$2"; shift 2 ;;
+    --monitoring)     ENABLE_MONITORING=true; shift ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --location        REGION Azure region (default: southafricanorth)"
       echo "  --cluster-name    NAME   AKS cluster name (default: aks-ml-demo)"
       echo "  --mig-mode        MODE   MIG mode: none|MIG1g|MIG2g|MIG3g|MIG7g (default: none)"
+      echo "  --monitoring              Enable Prometheus + Grafana monitoring stack"
       echo "  -h, --help               Show this help"
       exit 0
       ;;
@@ -536,9 +539,65 @@ EOF
 ok "LocalQueues created"
 
 # ============================================================================
-# Step 8: Verify cluster
+# Step 8: Deploy monitoring stack (optional)
 # ============================================================================
-step 8 "Verify cluster health"
+if [[ "$ENABLE_MONITORING" == "true" ]]; then
+  step 8 "Deploy monitoring stack (Prometheus + Grafana)"
+
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+  helm repo update prometheus-community
+
+  helm upgrade --install prometheus \
+    prometheus-community/kube-prometheus-stack \
+    --namespace monitoring \
+    --create-namespace \
+    --values "${PROJECT_DIR}/monitoring/values-prometheus-stack.yaml" \
+    --wait --timeout 300s
+  ok "kube-prometheus-stack installed"
+
+  helm upgrade gpu-operator nvidia/gpu-operator \
+    --namespace gpu-operator \
+    --reuse-values \
+    -f "${PROJECT_DIR}/monitoring/values-gpu-operator-monitoring.yaml" \
+    --wait --timeout 300s
+  ok "GPU Operator upgraded with DCGM ServiceMonitor"
+
+  helm upgrade kueue \
+    oci://registry.k8s.io/kueue/charts/kueue \
+    --version "$KUEUE_VERSION" \
+    --namespace kueue-system \
+    --reuse-values \
+    --set enablePrometheus=true \
+    --wait --timeout 300s
+  ok "Kueue upgraded with Prometheus ServiceMonitor"
+
+  kubectl create configmap gpu-cluster-overview-dashboard \
+    --from-file=gpu-cluster-overview.json="${PROJECT_DIR}/monitoring/dashboards/gpu-cluster-overview.json" \
+    --namespace monitoring \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label configmap gpu-cluster-overview-dashboard \
+    -n monitoring grafana_dashboard=1 --overwrite
+  kubectl annotate configmap gpu-cluster-overview-dashboard \
+    -n monitoring grafana_folder="GPU Observability" --overwrite
+  ok "Grafana dashboard provisioned"
+
+  info "Waiting for monitoring pods..."
+  kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=grafana \
+    -n monitoring --timeout=120s 2>/dev/null || warn "Grafana pod not ready yet"
+  kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=prometheus \
+    -n monitoring --timeout=120s 2>/dev/null || warn "Prometheus pod not ready yet"
+
+  ok "Monitoring stack deployed"
+  info "Access Grafana: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
+  info "Login: admin / demo"
+fi
+
+# ============================================================================
+# Step 9: Verify cluster
+# ============================================================================
+step 9 "Verify cluster health"
 
 info "Nodes:"
 kubectl get nodes -o wide
@@ -561,7 +620,7 @@ echo ""
 # ============================================================================
 # Access Info
 # ============================================================================
-step 9 "Access information"
+step 10 "Access information"
 
 CODER_URL=$(kubectl get svc -n coder -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 if [[ -n "$CODER_URL" ]]; then

@@ -1,0 +1,10 @@
+# GPU Operator Helm value overrides for monitoring
+# Enables the DCGM Exporter ServiceMonitor so Prometheus can scrape GPU metrics
+# Apply via: helm upgrade gpu-operator nvidia/gpu-operator -f values-gpu-operator-monitoring.yaml
+
+dcgmExporter:
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    honorLabels: false
+    additionalLabels: {}

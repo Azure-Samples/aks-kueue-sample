@@ -29,6 +29,9 @@ RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-rg-aks-ml-demo}"
 # azd stores Bicep outputs as camelCase env vars (e.g. migMode="MIG3g")
 MIG_MODE="${migMode:-none}"
 KUEUE_VERSION="0.16.1"
+ENABLE_MONITORING="${enableMonitoring:-false}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ============================================================================
 # Get AKS credentials
@@ -450,6 +453,68 @@ spec:
   clusterQueue: team-b-cq
 EOF
 ok "LocalQueues created"
+
+# ============================================================================
+# Deploy monitoring stack (optional — enabled via enableMonitoring=true)
+# Installs Prometheus + Grafana, enables DCGM + Kueue ServiceMonitors
+# ============================================================================
+if [[ "$ENABLE_MONITORING" == "true" ]]; then
+  step "Deploy monitoring stack (Prometheus + Grafana)"
+
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+  helm repo update prometheus-community
+
+  # 1. Install kube-prometheus-stack (must come first — provides ServiceMonitor CRDs)
+  helm upgrade --install prometheus \
+    prometheus-community/kube-prometheus-stack \
+    --namespace monitoring \
+    --create-namespace \
+    --values "${PROJECT_DIR}/monitoring/values-prometheus-stack.yaml" \
+    --wait --timeout 300s
+  ok "kube-prometheus-stack installed"
+
+  # 2. Upgrade GPU Operator to enable DCGM exporter ServiceMonitor
+  helm upgrade gpu-operator nvidia/gpu-operator \
+    --namespace gpu-operator \
+    --reuse-values \
+    -f "${PROJECT_DIR}/monitoring/values-gpu-operator-monitoring.yaml" \
+    --wait --timeout 300s
+  ok "GPU Operator upgraded with DCGM ServiceMonitor"
+
+  # 3. Upgrade Kueue to enable Prometheus ServiceMonitor
+  helm upgrade kueue \
+    oci://registry.k8s.io/kueue/charts/kueue \
+    --version "$KUEUE_VERSION" \
+    --namespace kueue-system \
+    --reuse-values \
+    --set enablePrometheus=true \
+    --wait --timeout 300s
+  ok "Kueue upgraded with Prometheus ServiceMonitor"
+
+  # 4. Create Grafana dashboard ConfigMap from JSON file
+  kubectl create configmap gpu-cluster-overview-dashboard \
+    --from-file=gpu-cluster-overview.json="${PROJECT_DIR}/monitoring/dashboards/gpu-cluster-overview.json" \
+    --namespace monitoring \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label configmap gpu-cluster-overview-dashboard \
+    -n monitoring grafana_dashboard=1 --overwrite
+  kubectl annotate configmap gpu-cluster-overview-dashboard \
+    -n monitoring grafana_folder="GPU Observability" --overwrite
+  ok "Grafana dashboard provisioned"
+
+  # 5. Wait for Prometheus and Grafana to be ready
+  info "Waiting for monitoring pods..."
+  kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=grafana \
+    -n monitoring --timeout=120s 2>/dev/null || warn "Grafana pod not ready yet"
+  kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=prometheus \
+    -n monitoring --timeout=120s 2>/dev/null || warn "Prometheus pod not ready yet"
+
+  ok "Monitoring stack deployed"
+  info "Access Grafana: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
+  info "Login: admin / demo"
+fi
 
 # ============================================================================
 # Verify
