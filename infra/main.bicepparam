@@ -8,4 +8,4 @@ param gpuVmSize = 'Standard_ND96isr_H100_v5'
 param gpuNodeCount = 1
 param systemVmSize = 'Standard_D4s_v5'
 param systemNodeCount = 2
-param kubernetesVersion = '1.33'
+param kubernetesVersion = '1.34'

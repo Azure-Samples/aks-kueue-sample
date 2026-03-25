@@ -1,5 +1,6 @@
 # NVIDIA GPU Operator Helm values — MIG mixed strategy
-# Each GPU: 2× 3g.40gb + 1× 1g.10gb  (per ND96isr_H100_v5: 8 GPUs → 16 large + 8 small)
+# Each GPU: 1× 3g.40gb + 4× 1g.10gb  (per ND96isr_H100_v5: 8 GPUs → 8 large + 32 small)
+# H100 80GB has 8 memory slices: 3g.40gb uses 4/8, 1g.10gb uses 1/8 each → 4+4=8/8 ✓
 # Usage: helm upgrade --install gpu-operator nvidia/gpu-operator \
 #          -n gpu-operator --create-namespace -f values-mig-mixed.yaml
 driver:
@@ -30,5 +31,5 @@ migParted:
             - devices: all
               mig-enabled: true
               mig-devices:
-                "3g.40gb": 2
-                "1g.10gb": 1
+                "3g.40gb": 1
+                "1g.10gb": 4

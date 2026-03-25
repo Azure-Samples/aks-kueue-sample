@@ -1,21 +1,20 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: team-a-job-low
+  name: team-a-job-single-gpu
   namespace: team-a
   labels:
     kueue.x-k8s.io/queue-name: team-a-lq
     kueue.x-k8s.io/priority-class: low-priority
 spec:
-  # Requires 2 GPUs — use ND-series (8 GPUs) or NC80 (2 GPUs). Won't fit on NC40 (1 GPU).
-  # Timeout includes CIFAR-10 dataset download (~170MB) on first run
+  # Single-GPU job — works on all H100 SKUs (ND, NC80, NC40)
   activeDeadlineSeconds: 900
   completions: 1
   parallelism: 1
   template:
     metadata:
       labels:
-        app: team-a-job-low
+        app: team-a-job-single-gpu
     spec:
       restartPolicy: Never
       tolerations:
@@ -34,28 +33,24 @@ spec:
 
               torch.manual_seed(42)
               torch.backends.cudnn.benchmark = True
-              N = torch.cuda.device_count()
 
               print("=" * 60)
-              print("  Team A — Low Priority — ResNet-18 CIFAR-10")
-              print(f"  GPUs: {N} | Batch: 128 | Optimizer: SGD")
-              for i in range(N):
-                  print(f"  [{i}] {torch.cuda.get_device_name(i)}")
+              print("  Team A — Single GPU — ResNet-18 CIFAR-10")
+              print(f"  GPU: {torch.cuda.get_device_name(0)}")
+              print(f"  VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.0f} GB")
               print("=" * 60)
 
               tfm = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(),
                   T.ToTensor(), T.Normalize((0.4914,0.4822,0.4465),(0.2023,0.1994,0.2010))])
               ds = torchvision.datasets.CIFAR10('/tmp/data', train=True, download=True, transform=tfm)
-              loader = torch.utils.data.DataLoader(ds, batch_size=128, shuffle=True, num_workers=0)
+              loader = torch.utils.data.DataLoader(ds, batch_size=256, shuffle=True, num_workers=2)
 
               model = torchvision.models.resnet18(num_classes=10).cuda()
-              if N > 1: model = nn.DataParallel(model)
-
               crit = nn.CrossEntropyLoss()
               opt = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
-              sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=200)
+              sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=100)
 
-              for ep in range(200):
+              for ep in range(100):
                   model.train(); loss_sum = correct = total = 0; t0 = time.time()
                   for x, y in loader:
                       x, y = x.cuda(), y.cuda()
@@ -63,10 +58,10 @@ spec:
                       loss.backward(); opt.step()
                       loss_sum += loss.item(); correct += out.max(1)[1].eq(y).sum().item(); total += y.size(0)
                   sched.step()
-                  print(f"Epoch {ep+1:3d}/200 | Loss {loss_sum/len(loader):.4f} | Acc {100*correct/total:.1f}% | {time.time()-t0:.1f}s")
+                  print(f"Epoch {ep+1:3d}/100 | Loss {loss_sum/len(loader):.4f} | Acc {100*correct/total:.1f}% | {time.time()-t0:.1f}s")
               print("Training complete!")
           resources:
             requests:
-              nvidia.com/gpu: 2
+              nvidia.com/gpu: 1
             limits:
-              nvidia.com/gpu: 2
+              nvidia.com/gpu: 1

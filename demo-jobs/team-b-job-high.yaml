@@ -7,6 +7,9 @@ metadata:
     kueue.x-k8s.io/queue-name: team-b-lq
     kueue.x-k8s.io/priority-class: high-priority
 spec:
+  # Requires 4 GPUs — ND-series only (8 GPUs). Won't fit on NC-series (1-2 GPUs).
+  # Timeout includes CIFAR-100 dataset download (~170MB) on first run
+  activeDeadlineSeconds: 1200
   completions: 1
   parallelism: 1
   template:
@@ -20,9 +23,48 @@ spec:
           operator: Exists
           effect: NoSchedule
       containers:
-        - name: gpu-workload
-          image: nvidia/cuda:12.4.0-base-ubuntu22.04
-          command: ["bash", "-c", "nvidia-smi && sleep 600"]
+        - name: training
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import torch, torch.nn as nn, torch.optim as optim
+              import torchvision, torchvision.transforms as T
+              import time
+
+              torch.manual_seed(99)
+              torch.backends.cudnn.benchmark = True
+              N = torch.cuda.device_count()
+
+              print("=" * 60)
+              print("  Team B — HIGH Priority — DenseNet-121 CIFAR-100")
+              print(f"  GPUs: {N} | Batch: 128 | Optimizer: AdamW")
+              for i in range(N):
+                  print(f"  [{i}] {torch.cuda.get_device_name(i)}")
+              print("=" * 60)
+
+              tfm = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(),
+                  T.ToTensor(), T.Normalize((0.5071,0.4867,0.4408),(0.2675,0.2565,0.2761))])
+              ds = torchvision.datasets.CIFAR100('/tmp/data', train=True, download=True, transform=tfm)
+              loader = torch.utils.data.DataLoader(ds, batch_size=128, shuffle=True, num_workers=0)
+
+              model = torchvision.models.densenet121(num_classes=100).cuda()
+              if N > 1: model = nn.DataParallel(model)
+
+              crit = nn.CrossEntropyLoss()
+              opt = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.05)
+              sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=100)
+
+              for ep in range(100):
+                  model.train(); loss_sum = correct = total = 0; t0 = time.time()
+                  for x, y in loader:
+                      x, y = x.cuda(), y.cuda()
+                      opt.zero_grad(); out = model(x); loss = crit(out, y)
+                      loss.backward(); opt.step()
+                      loss_sum += loss.item(); correct += out.max(1)[1].eq(y).sum().item(); total += y.size(0)
+                  sched.step()
+                  print(f"Epoch {ep+1:3d}/100 | Loss {loss_sum/len(loader):.4f} | Acc {100*correct/total:.1f}% | {time.time()-t0:.1f}s")
+              print("Training complete!")
           resources:
             requests:
               nvidia.com/gpu: 4

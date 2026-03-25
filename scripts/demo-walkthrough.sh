@@ -9,9 +9,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_JOBS_DIR="$(cd "${SCRIPT_DIR}/../demo-jobs" && pwd)"
 
-if ! command -v gum &>/dev/null; then
-  echo "ERROR: gum is required. Install with: brew install gum"
-  exit 1
+for cmd in gum jq; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "ERROR: $cmd is required. Install with: brew install $cmd"
+    exit 1
+  fi
+done
+
+# Detect GPU count from node allocatable resources
+TOTAL_GPUS=$(kubectl get nodes -l gpu-type=nvidia-h100 -o json 2>/dev/null | \
+  jq '[.items[].status.allocatable["nvidia.com/gpu"] // "0" | tonumber] | add // 0' 2>/dev/null || echo 0)
+if [[ "$TOTAL_GPUS" -eq 0 ]]; then
+  echo "WARNING: No GPU nodes detected. Demo may not work correctly."
+  TOTAL_GPUS=8  # fallback for display purposes
 fi
 
 # --- Theme colors (ANSI 256) ---
@@ -50,18 +60,38 @@ title "GPU Scheduling with Kueue" "Fair Sharing & Preemption"
 # ============================================================================
 
 echo ""
-narrate "Two ML teams share an 8-GPU H100 node."
-narrate "Each team has a guaranteed allocation. A shared pool"
-narrate "lets them borrow idle capacity. When contention happens,"
-narrate "Kueue preempts lower-priority workloads automatically."
+if [[ $TOTAL_GPUS -ge 4 ]]; then
+  narrate "Two ML teams share a ${TOTAL_GPUS}-GPU H100 node."
+  narrate "Each team has a guaranteed allocation. A shared pool"
+  narrate "lets them borrow idle capacity. When contention happens,"
+  narrate "Kueue preempts lower-priority workloads automatically."
+else
+  narrate "This cluster has ${TOTAL_GPUS} GPU(s) (NC-series)."
+  narrate "Kueue manages basic scheduling between teams."
+  narrate ""
+  narrate "⚠ Borrowing and preemption demos require 4+ GPUs."
+  narrate "  Using single-GPU jobs for this walkthrough."
+fi
 
 echo ""
-gum join --horizontal \
-  "$(gum style --border rounded --border-foreground $C_GREEN --foreground $C_GREEN --padding '0 2' --width 20 --align center 'Team A' '2 GPU nom.' '+4 borrow')" \
-  "$(gum style --border rounded --border-foreground $C_DIM --foreground $C_DIM --padding '0 2' --width 20 --align center 'Shared' '4 GPU lend' '')" \
-  "$(gum style --border rounded --border-foreground $C_BLUE --foreground $C_BLUE --padding '0 2' --width 20 --align center 'Team B' '2 GPU nom.' '+4 borrow')"
-
-note "" 'Cohort "ml-org" — resources flow between all three queues.'
+if [[ $TOTAL_GPUS -ge 4 ]]; then
+  TEAM_NOM=$((TOTAL_GPUS / 4))
+  SHARED=$((TOTAL_GPUS / 2))
+  BORROW=$SHARED
+  gum join --horizontal \
+    "$(gum style --border rounded --border-foreground $C_GREEN --foreground $C_GREEN --padding '0 2' --width 20 --align center 'Team A' "${TEAM_NOM} GPU nom." "+${BORROW} borrow")" \
+    "$(gum style --border rounded --border-foreground $C_DIM --foreground $C_DIM --padding '0 2' --width 20 --align center 'Shared' "${SHARED} GPU lend" '')" \
+    "$(gum style --border rounded --border-foreground $C_BLUE --foreground $C_BLUE --padding '0 2' --width 20 --align center 'Team B' "${TEAM_NOM} GPU nom." "+${BORROW} borrow")"
+  note "" 'Cohort "ml-org" — resources flow between all three queues.'
+elif [[ $TOTAL_GPUS -ge 2 ]]; then
+  gum join --horizontal \
+    "$(gum style --border rounded --border-foreground $C_GREEN --foreground $C_GREEN --padding '0 2' --width 20 --align center 'Team A' '1 GPU' '')" \
+    "$(gum style --border rounded --border-foreground $C_BLUE --foreground $C_BLUE --padding '0 2' --width 20 --align center 'Team B' '1 GPU' '')"
+  note "" 'Each team has 1 GPU. No shared pool with 2 GPUs.'
+else
+  gum style --border rounded --border-foreground $C_GREEN --foreground $C_GREEN --padding '0 2' --width 20 --align center 'Team A' '1 GPU' ''
+  note "" 'Single GPU — one team at a time.'
+fi
 pause
 
 # ============================================================================
@@ -104,7 +134,7 @@ pause
 section "Step 1: What We're Working With"
 # ============================================================================
 
-narrate "One ND96isr H100 v5 node = 8 GPUs."
+narrate "H100 node with ${TOTAL_GPUS} GPU(s)."
 run "kubectl get nodes -o json | jq -r '.items[] | \"\(.metadata.name)  \(.status.allocatable[\"nvidia.com/gpu\"] // \"0\") GPUs\"'"
 pause
 
@@ -116,27 +146,29 @@ run "kubectl get localqueues -A"
 pause
 
 # ============================================================================
-section "Step 2: Team A — Low-Priority Job (2 GPUs)"
+if [[ $TOTAL_GPUS -ge 4 ]]; then
+  # --- Full demo: borrowing + preemption (4+ GPUs) ---
+  section "Step 2: Team A — Low-Priority Job (2 GPUs)"
 # ============================================================================
 
-narrate "Team A submits a low-priority training job: 2 GPUs."
-narrate "Within their guaranteed quota — admitted immediately."
+  narrate "Team A submits a low-priority training job: ResNet-18 on CIFAR-10."
+  narrate "Requests 2 GPUs — within their guaranteed quota. Admitted immediately."
 
-run "kubectl apply -f ${DEMO_JOBS_DIR}/team-a-job-low.yaml"
-gum spin --title "Waiting for admission..." -- sleep 5
+  run "kubectl apply -f ${DEMO_JOBS_DIR}/team-a-job-low.yaml"
+  gum spin --title "Waiting for admission..." -- sleep 5
 
-echo ""
-gpu_grid "  A·lo" $C_GREEN "  A·lo" $C_GREEN "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM
-note "Team A: 2 GPUs used (2 nominal quota)"
-echo ""
-run "kubectl get workloads -n team-a"
-pause
+  echo ""
+  gpu_grid "  A·lo" $C_GREEN "  A·lo" $C_GREEN "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM "  idle" $C_DIM
+  note "Team A: 2 GPUs used (2 nominal quota)"
+  echo ""
+  run "kubectl get workloads -n team-a"
+  pause
 
 # ============================================================================
 section "Step 3: Team A — High-Priority Job (4 GPUs, Borrows)"
 # ============================================================================
 
-narrate "Team A submits a high-priority job: 4 GPUs."
+narrate "Team A submits a high-priority job: ResNet-50 on CIFAR-100 (4 GPUs)."
 narrate "Their nominal quota (2) is already used by the low-pri job."
 narrate "Kueue borrows 4 GPUs from the shared pool."
 
@@ -154,7 +186,7 @@ pause
 section "Step 4: Team B Arrives — Preemption"
 # ============================================================================
 
-narrate "Team B submits a high-priority job: 4 GPUs."
+narrate "Team B submits a high-priority job: DenseNet-121 on CIFAR-100 (4 GPUs)."
 narrate "Only 2 GPUs are free. Kueue needs to reclaim resources."
 narrate ""
 narrate "Preemption policy: lower-priority workloads are evicted first."
@@ -195,6 +227,63 @@ run "kubectl delete job team-a-job-low -n team-a --ignore-not-found"
 run "kubectl delete job team-a-job-high -n team-a --ignore-not-found"
 run "kubectl delete job team-b-job-high -n team-b --ignore-not-found"
 gum spin --title "Cleaning up..." -- sleep 3
+
+else
+  # --- Small cluster demo: single-GPU jobs (1-3 GPUs) ---
+  section "Step 2: Single-GPU Jobs (${TOTAL_GPUS} GPU cluster)"
+# ============================================================================
+
+  narrate "This cluster has ${TOTAL_GPUS} GPU(s) — using single-GPU jobs."
+  narrate "Borrowing and preemption demos require 4+ GPUs."
+  echo ""
+
+  narrate "Team A submits a single-GPU ResNet-18 training job."
+  run "kubectl apply -f ${DEMO_JOBS_DIR}/team-a-job-single-gpu.yaml"
+  gum spin --title "Waiting for admission..." -- sleep 5
+  run "kubectl get workloads -n team-a"
+
+  if [[ $TOTAL_GPUS -ge 2 ]]; then
+    echo ""
+    narrate "Team B submits a single-GPU VGG-11 training job."
+    run "kubectl apply -f ${DEMO_JOBS_DIR}/team-b-job-single-gpu.yaml"
+    gum spin --title "Waiting for admission..." -- sleep 5
+    run "kubectl get workloads -A"
+  fi
+  pause
+
+# ============================================================================
+  section "Clean Up"
+# ============================================================================
+
+  run "kubectl delete job team-a-job-single-gpu -n team-a --ignore-not-found"
+  run "kubectl delete job team-b-job-single-gpu -n team-b --ignore-not-found"
+  gum spin --title "Cleaning up..." -- sleep 3
+fi
+
+# ============================================================================
+section "Bonus: MIG GPU Partitioning (if enabled)"
+# ============================================================================
+
+narrate "If your cluster has MIG enabled, you can also run jobs on"
+narrate "isolated GPU slices. Two sample MIG jobs are included:"
+narrate ""
+narrate "  • team-a-job-mig-3g40gb — ResNet-18 on a 3g.40gb slice"
+narrate "  • team-b-job-mig-1g10gb — Small CNN on a 1g.10gb slice"
+
+echo ""
+note "To try them (requires MIG-enabled cluster):"
+note ""
+note "  kubectl apply -f ${DEMO_JOBS_DIR}/team-a-job-mig-3g40gb.yaml"
+note "  kubectl apply -f ${DEMO_JOBS_DIR}/team-b-job-mig-1g10gb.yaml"
+note ""
+note "  kubectl get workloads -A"
+note ""
+note "  # Clean up"
+note "  kubectl delete job team-a-job-mig-3g40gb -n team-a --ignore-not-found"
+note "  kubectl delete job team-b-job-mig-1g10gb -n team-b --ignore-not-found"
+note ""
+note "For a full MIG walkthrough: ./scripts/demo-mig-walkthrough.sh"
+pause
 
 echo ""
 title "Demo Complete"

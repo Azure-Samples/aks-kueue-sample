@@ -12,7 +12,12 @@ param location string = resourceGroup().location
 @description('Name of the AKS cluster')
 param clusterName string = 'aks-ml-demo'
 
-@description('GPU node VM size')
+@description('GPU node VM size (ND96isr_H100_v5 = 8×H100 SXM5 80GB, NC80adis_H100_v5 = 2×H100 NVL 94GB)')
+@allowed([
+  'Standard_ND96isr_H100_v5'
+  'Standard_NC40ads_H100_v5'
+  'Standard_NC80adis_H100_v5'
+])
 param gpuVmSize string = 'Standard_ND96isr_H100_v5'
 
 @description('Number of GPU nodes')
@@ -25,7 +30,7 @@ param systemVmSize string = 'Standard_D4s_v5'
 param systemNodeCount int = 2
 
 @description('Kubernetes version')
-param kubernetesVersion string = '1.33'
+param kubernetesVersion string = '1.34'
 
 // --- AKS Cluster ---
 
@@ -56,3 +61,4 @@ module gpuNodePool 'modules/gpu-nodepool.bicep' = {
 output aksClusterName string = aksCluster.outputs.aksName
 output aksClusterId string = aksCluster.outputs.aksId
 output nodeResourceGroup string = aksCluster.outputs.aksNodeResourceGroupName
+output gpuVmSize string = gpuVmSize
