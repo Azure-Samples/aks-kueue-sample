@@ -327,21 +327,20 @@ resource "kubernetes_pod" "workspace" {
     }
 
     init_container {
-      name  = "install-tools"
-      image = "bitnami/kubectl:1.30"
-      command = ["sh", "-c"]
-      args = [<<-EOT
-        # Copy kubectl binary to shared volume
-        cp /opt/bitnami/kubectl/bin/kubectl /tools/kubectl
+      name  = "install-kubectl"
+      image = "registry.k8s.io/kubectl:v1.34.0"
+      command = ["sh", "-c", "cp /bin/kubectl /tools/kubectl && chmod +x /tools/kubectl"]
 
-        # Download and install Helm
-        curl -fsSL https://get.helm.sh/helm-v3.16.0-linux-amd64.tar.gz | tar xz -C /tmp
-        cp /tmp/linux-amd64/helm /tools/helm
+      volume_mount {
+        name       = "tools"
+        mount_path = "/tools"
+      }
+    }
 
-        chmod +x /tools/kubectl /tools/helm
-        echo "Tools installed: kubectl, helm"
-      EOT
-      ]
+    init_container {
+      name  = "install-helm"
+      image = "alpine:3.21"
+      command = ["sh", "-c", "wget -qO- https://get.helm.sh/helm-v3.20.1-linux-amd64.tar.gz | tar xz -C /tmp && cp /tmp/linux-amd64/helm /tools/helm && chmod +x /tools/helm"]
 
       volume_mount {
         name       = "tools"

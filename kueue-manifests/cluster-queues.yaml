@@ -1,4 +1,7 @@
 # Whole-GPU mode: Cohort + 3 ClusterQueues
+# ⚠ These are REFERENCE copies of what deploy.sh / post-provision.sh apply inline.
+# If you change quotas, update those scripts too (or vice versa).
+#
 # 8 GPUs total on 1× ND96isr_H100_v5 node
 #   team-a-cq: 2 guaranteed, borrow up to 4
 #   team-b-cq: 2 guaranteed, borrow up to 4
@@ -30,11 +33,9 @@ spec:
         - name: h100-flavor
           resources:
             - name: "cpu"
-              nominalQuota: 24
-              borrowingLimit: 48
+              nominalQuota: 48
             - name: "memory"
-              nominalQuota: 128Gi
-              borrowingLimit: 256Gi
+              nominalQuota: "512Gi"
             - name: "nvidia.com/gpu"
               nominalQuota: 2
               borrowingLimit: 4
@@ -59,11 +60,9 @@ spec:
         - name: h100-flavor
           resources:
             - name: "cpu"
-              nominalQuota: 24
-              borrowingLimit: 48
+              nominalQuota: 48
             - name: "memory"
-              nominalQuota: 128Gi
-              borrowingLimit: 256Gi
+              nominalQuota: "512Gi"
             - name: "nvidia.com/gpu"
               nominalQuota: 2
               borrowingLimit: 4
@@ -81,11 +80,9 @@ spec:
         - name: h100-flavor
           resources:
             - name: "cpu"
-              nominalQuota: 48
-              lendingLimit: 48
+              nominalQuota: 96
             - name: "memory"
-              nominalQuota: 256Gi
-              lendingLimit: 256Gi
+              nominalQuota: "1024Gi"
             - name: "nvidia.com/gpu"
               nominalQuota: 4
               lendingLimit: 4

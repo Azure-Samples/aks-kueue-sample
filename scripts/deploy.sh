@@ -27,8 +27,9 @@ step()  { echo -e "\n${BOLD}${CYAN}==> Step $1: $2${NC}"; }
 RESOURCE_GROUP="rg-aks-ml-demo"
 LOCATION="southafricanorth"
 CLUSTER_NAME="aks-ml-demo"
+GPU_VM_SIZE="Standard_ND96isr_H100_v5"
 MIG_MODE="none"
-KUEUE_VERSION="0.16.1"
+KUEUE_VERSION="0.16.4"
 ENABLE_MONITORING=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --resource-group) RESOURCE_GROUP="$2"; shift 2 ;;
     --location)       LOCATION="$2"; shift 2 ;;
     --cluster-name)   CLUSTER_NAME="$2"; shift 2 ;;
+    --gpu-sku)        GPU_VM_SIZE="$2"; shift 2 ;;
     --mig-mode)       MIG_MODE="$2"; shift 2 ;;
     --monitoring)     ENABLE_MONITORING=true; shift ;;
     -h|--help)
@@ -47,7 +49,12 @@ while [[ $# -gt 0 ]]; do
       echo "  --resource-group  NAME   Resource group name (default: rg-aks-ml-demo)"
       echo "  --location        REGION Azure region (default: southafricanorth)"
       echo "  --cluster-name    NAME   AKS cluster name (default: aks-ml-demo)"
-      echo "  --mig-mode        MODE   MIG mode: none|MIG1g|MIG2g|MIG3g|MIG7g (default: none)"
+      echo "  --gpu-sku         SKU    GPU VM size (default: Standard_ND96isr_H100_v5)"
+      echo "                           Options:"
+      echo "                             Standard_ND96isr_H100_v5   8× H100 SXM5 80GB (InfiniBand)"
+      echo "                             Standard_NC80adis_H100_v5  2× H100 NVL 94GB"
+      echo "                             Standard_NC40ads_H100_v5   1× H100 NVL 94GB"
+      echo "  --mig-mode        MODE   MIG mode: none|MIG1g|MIG2g|MIG3g|MIG4g|MIG7g (default: none)"
       echo "  --monitoring              Enable Prometheus + Grafana monitoring stack"
       echo "  -h, --help               Show this help"
       exit 0
@@ -57,14 +64,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ============================================================================
+# Derive GPU count from VM SKU
+# ============================================================================
+case "$GPU_VM_SIZE" in
+  Standard_ND96isr_H100_v5)   GPUS_PER_NODE=8; GPU_DESCRIPTION="8× H100 SXM5 80GB" ;;
+  Standard_NC80adis_H100_v5)  GPUS_PER_NODE=2; GPU_DESCRIPTION="2× H100 NVL 94GB" ;;
+  Standard_NC40ads_H100_v5)   GPUS_PER_NODE=1; GPU_DESCRIPTION="1× H100 NVL 94GB" ;;
+  *) error "Unsupported GPU VM size: $GPU_VM_SIZE"; exit 1 ;;
+esac
+
+# ============================================================================
 # Cost Warning
 # ============================================================================
 echo ""
 echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${RED}${BOLD}║  ⚠️  COST WARNING                                          ║${NC}"
 echo -e "${RED}${BOLD}║                                                              ║${NC}"
-echo -e "${RED}${BOLD}║  This deployment creates a Standard_ND96isr_H100_v5 node    ║${NC}"
-echo -e "${RED}${BOLD}║  which costs approximately \$98/hr (~\$2,360/day).            ║${NC}"
+echo -e "${RED}${BOLD}║  GPU VM: ${GPU_VM_SIZE}$(printf '%*s' $((36 - ${#GPU_VM_SIZE})) '')║${NC}"
+echo -e "${RED}${BOLD}║  GPUs:   ${GPU_DESCRIPTION}$(printf '%*s' $((36 - ${#GPU_DESCRIPTION})) '')║${NC}"
 echo -e "${RED}${BOLD}║                                                              ║${NC}"
 echo -e "${RED}${BOLD}║  Remember to run teardown.sh when done!                      ║${NC}"
 echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
@@ -121,6 +138,7 @@ if [[ ! -f "$BICEP_FILE" ]]; then
 fi
 
 info "MIG mode: ${BOLD}${MIG_MODE}${NC}"
+info "GPU SKU: ${BOLD}${GPU_VM_SIZE}${NC} (${GPU_DESCRIPTION})"
 info "Starting Bicep deployment..."
 
 az deployment group create \
@@ -129,6 +147,7 @@ az deployment group create \
   --parameters \
     clusterName="$CLUSTER_NAME" \
     location="$LOCATION" \
+    gpuVmSize="$GPU_VM_SIZE" \
   --output none
 
 ok "AKS cluster and GPU node pool deployed"
@@ -180,14 +199,26 @@ ok "GPU Operator installed"
 
 # Configure MIG if enabled
 if [[ "$MIG_MODE" != "none" ]]; then
-  case "$MIG_MODE" in
-    MIG1g) MIG_CONFIG="all-1g.10gb" ;;
-    MIG2g) MIG_CONFIG="all-2g.20gb" ;;
-    MIG3g) MIG_CONFIG="all-3g.40gb" ;;
-    MIG4g) MIG_CONFIG="all-4g.40gb" ;;
-    MIG7g) MIG_CONFIG="all-7g.80gb" ;;
-    *)     error "Unknown MIG mode: $MIG_MODE"; exit 1 ;;
-  esac
+  # H100 NVL (NC-series, 94GB) uses different MIG profile sizes
+  if [[ "$GPU_VM_SIZE" == Standard_NC* ]]; then
+    case "$MIG_MODE" in
+      MIG1g) MIG_CONFIG="all-1g.12gb" ;;
+      MIG2g) MIG_CONFIG="all-2g.24gb" ;;
+      MIG3g) MIG_CONFIG="all-3g.47gb" ;;
+      MIG4g) MIG_CONFIG="all-4g.47gb" ;;
+      MIG7g) MIG_CONFIG="all-7g.94gb" ;;
+      *)     error "Unknown MIG mode: $MIG_MODE"; exit 1 ;;
+    esac
+  else
+    case "$MIG_MODE" in
+      MIG1g) MIG_CONFIG="all-1g.10gb" ;;
+      MIG2g) MIG_CONFIG="all-2g.20gb" ;;
+      MIG3g) MIG_CONFIG="all-3g.40gb" ;;
+      MIG4g) MIG_CONFIG="all-4g.40gb" ;;
+      MIG7g) MIG_CONFIG="all-7g.80gb" ;;
+      *)     error "Unknown MIG mode: $MIG_MODE"; exit 1 ;;
+    esac
+  fi
 
   step "4b" "Configure MIG: ${MIG_CONFIG}"
   for node in $(kubectl get nodes -l gpu-type=nvidia-h100 -o jsonpath='{.items[*].metadata.name}'); do
@@ -224,6 +255,7 @@ helm repo update coder-v2
 helm upgrade --install coder coder-v2/coder \
   --namespace coder \
   --create-namespace \
+  --values "${PROJECT_DIR}/coder/values.yaml" \
   --wait --timeout 300s
 
 ok "Coder v2 installed (embedded DB mode)"
@@ -312,6 +344,40 @@ EOF
 info "WorkloadPriorityClasses created"
 
 # Apply Kueue CRs based on MIG mode
+# Compute GPU quotas dynamically from node count and GPUs per node
+TOTAL_GPUS=$((1 * GPUS_PER_NODE))  # gpuNodeCount=1 by default
+
+if [[ $TOTAL_GPUS -lt 4 ]]; then
+  warn "Only ${TOTAL_GPUS} GPU(s) available. Kueue demo features (borrowing, preemption)"
+  warn "require 4+ GPUs. Quotas will be set for basic scheduling only."
+fi
+
+# Quota logic by GPU count:
+#   1 GPU:  team-a=1, team-b=0, shared=0 (single-team mode)
+#   2 GPUs: team-a=1, team-b=1, shared=0 (no sharing)
+#   4 GPUs: team-a=1, team-b=1, shared=2
+#   8 GPUs: team-a=2, team-b=2, shared=4 (default ND-series)
+if [[ $TOTAL_GPUS -ge 8 ]]; then
+  TEAM_A_GPU_QUOTA=$((TOTAL_GPUS / 4))
+  TEAM_B_GPU_QUOTA=$((TOTAL_GPUS / 4))
+  SHARED_GPU_QUOTA=$((TOTAL_GPUS / 2))
+elif [[ $TOTAL_GPUS -ge 4 ]]; then
+  TEAM_A_GPU_QUOTA=1
+  TEAM_B_GPU_QUOTA=1
+  SHARED_GPU_QUOTA=$((TOTAL_GPUS - 2))
+elif [[ $TOTAL_GPUS -ge 2 ]]; then
+  TEAM_A_GPU_QUOTA=1
+  TEAM_B_GPU_QUOTA=1
+  SHARED_GPU_QUOTA=0
+else
+  TEAM_A_GPU_QUOTA=1
+  TEAM_B_GPU_QUOTA=0
+  SHARED_GPU_QUOTA=0
+fi
+TEAM_A_BORROW_LIMIT=$SHARED_GPU_QUOTA
+TEAM_B_BORROW_LIMIT=$SHARED_GPU_QUOTA
+info "GPU quotas: ${TOTAL_GPUS} total, team-a=${TEAM_A_GPU_QUOTA}, team-b=${TEAM_B_GPU_QUOTA}, shared=${SHARED_GPU_QUOTA}"
+
 if [ "$MIG_MODE" = "none" ]; then
   # Whole GPU mode
   cat <<EOF | kubectl apply -f -
@@ -356,8 +422,8 @@ spec:
             - name: "memory"
               nominalQuota: "512Gi"
             - name: "nvidia.com/gpu"
-              nominalQuota: 2
-              borrowingLimit: 4
+              nominalQuota: ${TEAM_A_GPU_QUOTA}
+              borrowingLimit: ${TEAM_A_BORROW_LIMIT}
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -383,8 +449,8 @@ spec:
             - name: "memory"
               nominalQuota: "512Gi"
             - name: "nvidia.com/gpu"
-              nominalQuota: 2
-              borrowingLimit: 4
+              nominalQuota: ${TEAM_B_GPU_QUOTA}
+              borrowingLimit: ${TEAM_B_BORROW_LIMIT}
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -403,24 +469,42 @@ spec:
             - name: "memory"
               nominalQuota: "1024Gi"
             - name: "nvidia.com/gpu"
-              nominalQuota: 4
-              lendingLimit: 4
+              nominalQuota: ${SHARED_GPU_QUOTA}
+              lendingLimit: ${SHARED_GPU_QUOTA}
 EOF
   ok "Kueue config applied (whole GPU mode)"
 
 else
-  # MIG mode — dynamic based on MIG_MODE
-  case "$MIG_MODE" in
-    MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.10gb"; SLICES_PER_GPU=7 ;;
-    MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.20gb"; SLICES_PER_GPU=3 ;;
-    MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.40gb"; SLICES_PER_GPU=2 ;;
-    MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.40gb"; SLICES_PER_GPU=1 ;;
-    MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.80gb"; SLICES_PER_GPU=1 ;;
-    *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
-  esac
-  TOTAL_SLICES=$((8 * SLICES_PER_GPU))
+  # MIG mode — dynamic based on MIG_MODE and GPU variant
+  # H100 SXM5 (ND-series) has 80GB → profiles: 1g.10gb, 2g.20gb, 3g.40gb, 4g.40gb, 7g.80gb
+  # H100 NVL  (NC-series) has 94GB → profiles: 1g.12gb, 2g.24gb, 3g.47gb, 4g.47gb, 7g.94gb
+  IS_NC_SERIES=false
+  [[ "$GPU_VM_SIZE" == Standard_NC* ]] && IS_NC_SERIES=true
+
+  if [[ "$IS_NC_SERIES" == "true" ]]; then
+    case "$MIG_MODE" in
+      MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.12gb"; SLICES_PER_GPU=7 ;;
+      MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.24gb"; SLICES_PER_GPU=3 ;;
+      MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.47gb"; SLICES_PER_GPU=2 ;;
+      MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.47gb"; SLICES_PER_GPU=1 ;;
+      MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.94gb"; SLICES_PER_GPU=1 ;;
+      *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+    esac
+  else
+    case "$MIG_MODE" in
+      MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.10gb"; SLICES_PER_GPU=7 ;;
+      MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.20gb"; SLICES_PER_GPU=3 ;;
+      MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.40gb"; SLICES_PER_GPU=2 ;;
+      MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.40gb"; SLICES_PER_GPU=1 ;;
+      MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.80gb"; SLICES_PER_GPU=1 ;;
+      *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+    esac
+  fi
+  TOTAL_SLICES=$((GPUS_PER_NODE * SLICES_PER_GPU))
   TEAM_QUOTA=$((TOTAL_SLICES / 4))
+  [[ "$TEAM_QUOTA" -lt 1 ]] && TEAM_QUOTA=1
   SHARED_QUOTA=$((TOTAL_SLICES / 2))
+  [[ "$SHARED_QUOTA" -lt 1 ]] && SHARED_QUOTA=1
   FLAVOR_NAME="h100-mig-$(echo "$MIG_MODE" | tr '[:upper:]' '[:lower:]')"
 
   cat <<EOF | kubectl apply -f -
@@ -547,13 +631,15 @@ if [[ "$ENABLE_MONITORING" == "true" ]]; then
   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
   helm repo update prometheus-community
 
+  PROM_STACK_VERSION="72.6.2"
   helm upgrade --install prometheus \
     prometheus-community/kube-prometheus-stack \
+    --version "$PROM_STACK_VERSION" \
     --namespace monitoring \
     --create-namespace \
     --values "${PROJECT_DIR}/monitoring/values-prometheus-stack.yaml" \
     --wait --timeout 300s
-  ok "kube-prometheus-stack installed"
+  ok "kube-prometheus-stack ${PROM_STACK_VERSION} installed"
 
   helm upgrade gpu-operator nvidia/gpu-operator \
     --namespace gpu-operator \

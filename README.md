@@ -11,7 +11,7 @@ A sample AKS deployment with NVIDIA H100 GPUs, [Kueue](https://kueue.sigs.k8s.io
 
 ## Architecture
 
-The cluster runs two node pools. The system pool hosts Kueue and Coder. The GPU pool runs ND-series H100 VMs managed by the NVIDIA GPU Operator. Kueue enforces per-team quotas through three ClusterQueues in a shared Cohort, enabling borrowing and preemption across teams.
+The cluster runs two node pools. The system pool hosts Kueue and Coder. The GPU pool runs H100 VMs (ND-series 8-GPU or NC-series 1–2 GPU) managed by the NVIDIA GPU Operator. Kueue enforces per-team quotas through three ClusterQueues in a shared Cohort, enabling borrowing and preemption across teams.
 
 ```
 AKS Cluster
@@ -32,12 +32,16 @@ AKS Cluster
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | 1.29+ |
 | [Helm](https://helm.sh/docs/intro/install/) | 3.14+ |
 | [gum](https://github.com/charmbracelet/gum#installation) | For interactive demo scripts |
-| GPU quota | ND H100 v5 family: ≥96 vCPUs in your target region |
+| GPU quota | ND H100 v5 or NC H100 v5 family vCPUs in your target region (see GPU SKU table) |
 
 ## Quick Start
 
 ```bash
-# Deploy (~13 minutes)
+# Deploy with default ND-series 8×H100 (~13 minutes)
+azd up
+
+# Or deploy with NC-series 2×H100 (lower cost)
+azd env set gpuVmSize Standard_NC80adis_H100_v5
 azd up
 
 # Run the interactive demo
@@ -46,6 +50,29 @@ azd up
 # Tear down when done
 azd down --force --purge
 ```
+
+## GPU VM Options
+
+| SKU | GPUs | Memory/GPU | Interconnect | vCPUs | Use Case |
+|---|---|---|---|---|---|
+| `Standard_ND96isr_H100_v5` (default) | 8× H100 SXM5 | 80 GB | InfiniBand + NVLink | 96 | Multi-GPU training, large models |
+| `Standard_NC80adis_H100_v5` | 2× H100 NVL | 94 GB | NVLink (no IB) | 80 | Medium-scale training, inference |
+| `Standard_NC40ads_H100_v5` | 1× H100 NVL | 94 GB | — | 40 | Single-GPU fine-tuning, dev/test |
+
+Select via `azd env set gpuVmSize <SKU>` or `./scripts/deploy.sh --gpu-sku <SKU>`.
+
+Kueue quotas adjust automatically based on GPU count per node. Demo walkthrough scripts auto-detect available GPUs and select appropriate job variants (single-GPU for NC-series, multi-GPU for ND-series).
+
+> **Note:** NC-series H100 NVL GPUs have 94 GB memory (vs 80 GB on ND-series SXM5) but lack InfiniBand. MIG is supported on both series.
+
+> **Note:** The default demo jobs (`demo-jobs/team-*-job-{low,high}.yaml`) request 2–4 GPUs
+> and are designed for the ND-series (8 GPUs). For NC-series nodes (1–2 GPUs), the demo scripts
+> automatically switch to single-GPU variants (`team-*-job-single-gpu.yaml`). You can also
+> run them manually:
+> ```bash
+> kubectl apply -f demo-jobs/team-a-job-single-gpu.yaml
+> kubectl apply -f demo-jobs/team-b-job-single-gpu.yaml
+> ```
 
 ## Deploy with MIG
 
@@ -61,7 +88,7 @@ azd env set migMode MIG3g
 azd up
 ```
 
-Available profiles: `MIG1g` (7/GPU), `MIG2g` (3/GPU), `MIG3g` (2/GPU), `MIG7g` (full GPU).
+Available profiles: `MIG1g` (7/GPU), `MIG2g` (3/GPU), `MIG3g` (2/GPU), `MIG4g` (1/GPU), `MIG7g` (full GPU).
 
 MIG profiles can be changed on a running cluster by relabeling the GPU node:
 
@@ -79,12 +106,27 @@ Then run the MIG-specific demo:
 
 ### H100 MIG Profiles
 
+MIG profile sizes depend on the GPU memory variant. The deploy scripts automatically select the correct profiles based on the GPU SKU.
+
+**H100 SXM5 — 80 GB (ND-series)**
+
 | Profile | Memory | Compute | Per GPU | K8s Resource |
 |---|---|---|---|---|
 | `1g.10gb` | 10 GB | 1/7 SMs | 7 | `nvidia.com/mig-1g.10gb` |
 | `2g.20gb` | 20 GB | 2/7 SMs | 3 | `nvidia.com/mig-2g.20gb` |
 | `3g.40gb` | 40 GB | 3/7 SMs | 2 | `nvidia.com/mig-3g.40gb` |
+| `4g.40gb` | 40 GB | 4/7 SMs | 1 | `nvidia.com/mig-4g.40gb` |
 | `7g.80gb` | 80 GB | 7/7 SMs | 1 | `nvidia.com/mig-7g.80gb` |
+
+**H100 NVL — 94 GB (NC-series)**
+
+| Profile | Memory | Compute | Per GPU | K8s Resource |
+|---|---|---|---|---|
+| `1g.12gb` | 12 GB | 1/7 SMs | 7 | `nvidia.com/mig-1g.12gb` |
+| `2g.24gb` | 24 GB | 2/7 SMs | 3 | `nvidia.com/mig-2g.24gb` |
+| `3g.47gb` | 47 GB | 3/7 SMs | 2 | `nvidia.com/mig-3g.47gb` |
+| `4g.47gb` | 47 GB | 4/7 SMs | 1 | `nvidia.com/mig-4g.47gb` |
+| `7g.94gb` | 94 GB | 7/7 SMs | 1 | `nvidia.com/mig-7g.94gb` |
 
 ## Coder Workspaces
 
@@ -114,6 +156,9 @@ azd up
 
 ```bash
 ./scripts/deploy.sh --monitoring
+
+# Or with a specific GPU SKU
+./scripts/deploy.sh --monitoring --gpu-sku Standard_NC80adis_H100_v5
 ```
 
 ### What gets deployed
@@ -126,7 +171,7 @@ azd up
 | Dashboard | Panels | Purpose |
 |---|---|---|
 | **GPU Cluster Overview** | GPU utilization per namespace, queue depth & wait times, preemption events, GPU-hours per namespace | Multitenancy view — ties GPU usage to Kueue queues |
-| **NVIDIA DCGM Exporter** | Per-GPU temperature, power draw, SM/memory clocks, memory utilization, SM utilization, encoder/decoder utilization, PCIe errors, energy consumption | Hardware view — per-GPU detail for all 8 H100s |
+| **NVIDIA DCGM Exporter** | Per-GPU temperature, power draw, SM/memory clocks, memory utilization, SM utilization, encoder/decoder utilization, PCIe errors, energy consumption | Hardware view — per-GPU detail for all H100s on the node |
 
 ### Access Grafana
 
@@ -157,7 +202,8 @@ Submit jobs that light up all dashboard panels (queue pressure, preemption, GPU 
 │   ├── values-prometheus-stack.yaml
 │   ├── values-gpu-operator-monitoring.yaml
 │   └── dashboards/
-│       └── gpu-cluster-overview.json
+│       ├── gpu-cluster-overview.json
+│       └── dcgm-exporter-dashboard.json
 ├── kueue-manifests/            # Reference Kueue CRs (applied by post-provision hook)
 ├── gpu-operator/               # GPU Operator Helm values for MIG modes
 ├── coder/                      # Coder Helm values + workspace template
@@ -212,6 +258,7 @@ kubectl get nodes --show-labels | grep mig
 - [NVIDIA MIG User Guide](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/index.html)
 - [NVIDIA GPU Operator on AKS](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/microsoft-aks.html)
 - [ND H100 v5 with MIG on AKS](https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/deploying-azure-nd-h100-v5-instances-in-aks-with-nvidia-mig-gpu-slicing/4384080)
+- [NCads H100 v5 Series](https://learn.microsoft.com/en-us/azure/virtual-machines/ncads-h100-v5)
 - [Coder v2](https://coder.com/docs/install/kubernetes)
 - [Azure Developer CLI](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/)
 

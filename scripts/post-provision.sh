@@ -28,10 +28,22 @@ RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-rg-aks-ml-demo}"
 # MIG_MODE: none, MIG1g, MIG2g, MIG3g, etc.
 # azd stores Bicep outputs as camelCase env vars (e.g. migMode="MIG3g")
 MIG_MODE="${migMode:-none}"
-KUEUE_VERSION="0.16.1"
+GPU_VM_SIZE="${gpuVmSize:-Standard_ND96isr_H100_v5}"
+KUEUE_VERSION="0.16.4"
 ENABLE_MONITORING="${enableMonitoring:-false}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Derive GPU count from VM SKU
+case "$GPU_VM_SIZE" in
+  Standard_ND96isr_H100_v5)   GPUS_PER_NODE=8 ;;
+  Standard_NC80adis_H100_v5)  GPUS_PER_NODE=2 ;;
+  Standard_NC40ads_H100_v5)   GPUS_PER_NODE=1 ;;
+  *)
+    echo "ERROR: Unsupported GPU VM size: $GPU_VM_SIZE"
+    echo "Supported: Standard_ND96isr_H100_v5, Standard_NC80adis_H100_v5, Standard_NC40ads_H100_v5"
+    exit 1 ;;
+esac
 
 # ============================================================================
 # Get AKS credentials
@@ -84,14 +96,26 @@ ok "GPU Operator installed"
 # ============================================================================
 if [[ "$MIG_MODE" != "none" ]]; then
   # Map migMode to the mig-parted config label
-  case "$MIG_MODE" in
-    MIG1g) MIG_CONFIG="all-1g.10gb" ;;
-    MIG2g) MIG_CONFIG="all-2g.20gb" ;;
-    MIG3g) MIG_CONFIG="all-3g.40gb" ;;
-    MIG4g) MIG_CONFIG="all-4g.40gb" ;;
-    MIG7g) MIG_CONFIG="all-7g.80gb" ;;
-    *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
-  esac
+  # H100 NVL (NC-series, 94GB) uses different profile sizes than H100 SXM5 (ND-series, 80GB)
+  if [[ "$GPU_VM_SIZE" == Standard_NC* ]]; then
+    case "$MIG_MODE" in
+      MIG1g) MIG_CONFIG="all-1g.12gb" ;;
+      MIG2g) MIG_CONFIG="all-2g.24gb" ;;
+      MIG3g) MIG_CONFIG="all-3g.47gb" ;;
+      MIG4g) MIG_CONFIG="all-4g.47gb" ;;
+      MIG7g) MIG_CONFIG="all-7g.94gb" ;;
+      *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+    esac
+  else
+    case "$MIG_MODE" in
+      MIG1g) MIG_CONFIG="all-1g.10gb" ;;
+      MIG2g) MIG_CONFIG="all-2g.20gb" ;;
+      MIG3g) MIG_CONFIG="all-3g.40gb" ;;
+      MIG4g) MIG_CONFIG="all-4g.40gb" ;;
+      MIG7g) MIG_CONFIG="all-7g.80gb" ;;
+      *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+    esac
+  fi
 
   step "Configuring MIG: ${MIG_CONFIG}"
 
@@ -138,6 +162,7 @@ helm repo update coder-v2
 helm upgrade --install coder coder-v2/coder \
   --namespace coder \
   --create-namespace \
+  --values "${SCRIPT_DIR}/../coder/values.yaml" \
   --wait --timeout 300s
 
 ok "Coder v2 installed (embedded DB mode)"
@@ -226,6 +251,40 @@ EOF
 info "WorkloadPriorityClasses created"
 
 # Kueue CRs based on MIG mode
+# Compute GPU quotas dynamically from GPUs per node
+TOTAL_GPUS=$((1 * GPUS_PER_NODE))  # gpuNodeCount=1 by default
+
+if [[ $TOTAL_GPUS -lt 4 ]]; then
+  warn "Only ${TOTAL_GPUS} GPU(s) available. Kueue demo features (borrowing, preemption)"
+  warn "require 4+ GPUs. Quotas will be set for basic scheduling only."
+fi
+
+# Quota logic by GPU count:
+#   1 GPU:  team-a=1, team-b=0, shared=0 (single-team mode)
+#   2 GPUs: team-a=1, team-b=1, shared=0 (no sharing)
+#   4 GPUs: team-a=1, team-b=1, shared=2
+#   8 GPUs: team-a=2, team-b=2, shared=4 (default ND-series)
+if [[ $TOTAL_GPUS -ge 8 ]]; then
+  TEAM_A_GPU_QUOTA=$((TOTAL_GPUS / 4))
+  TEAM_B_GPU_QUOTA=$((TOTAL_GPUS / 4))
+  SHARED_GPU_QUOTA=$((TOTAL_GPUS / 2))
+elif [[ $TOTAL_GPUS -ge 4 ]]; then
+  TEAM_A_GPU_QUOTA=1
+  TEAM_B_GPU_QUOTA=1
+  SHARED_GPU_QUOTA=$((TOTAL_GPUS - 2))
+elif [[ $TOTAL_GPUS -ge 2 ]]; then
+  TEAM_A_GPU_QUOTA=1
+  TEAM_B_GPU_QUOTA=1
+  SHARED_GPU_QUOTA=0
+else
+  TEAM_A_GPU_QUOTA=1
+  TEAM_B_GPU_QUOTA=0
+  SHARED_GPU_QUOTA=0
+fi
+TEAM_A_BORROW_LIMIT=$SHARED_GPU_QUOTA
+TEAM_B_BORROW_LIMIT=$SHARED_GPU_QUOTA
+info "GPU quotas: ${TOTAL_GPUS} total, team-a=${TEAM_A_GPU_QUOTA}, team-b=${TEAM_B_GPU_QUOTA}, shared=${SHARED_GPU_QUOTA}"
+
 if [ "$MIG_MODE" = "none" ]; then
   cat <<EOF | kubectl apply -f -
 apiVersion: kueue.x-k8s.io/v1beta2
@@ -269,8 +328,8 @@ spec:
             - name: "memory"
               nominalQuota: "512Gi"
             - name: "nvidia.com/gpu"
-              nominalQuota: 2
-              borrowingLimit: 4
+              nominalQuota: ${TEAM_A_GPU_QUOTA}
+              borrowingLimit: ${TEAM_A_BORROW_LIMIT}
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -296,8 +355,8 @@ spec:
             - name: "memory"
               nominalQuota: "512Gi"
             - name: "nvidia.com/gpu"
-              nominalQuota: 2
-              borrowingLimit: 4
+              nominalQuota: ${TEAM_B_GPU_QUOTA}
+              borrowingLimit: ${TEAM_B_BORROW_LIMIT}
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -316,25 +375,42 @@ spec:
             - name: "memory"
               nominalQuota: "1024Gi"
             - name: "nvidia.com/gpu"
-              nominalQuota: 4
-              lendingLimit: 4
+              nominalQuota: ${SHARED_GPU_QUOTA}
+              lendingLimit: ${SHARED_GPU_QUOTA}
 EOF
   ok "Kueue config applied (whole GPU mode)"
 
 else
-  # Derive MIG resource name from MIG_MODE: MIG3g → nvidia.com/mig-3g.40gb
-  # Map: MIG1g→1g.10gb, MIG2g→2g.20gb, MIG3g→3g.40gb, MIG4g→4g.40gb, MIG7g→7g.80gb
-  case "$MIG_MODE" in
-    MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.10gb"; SLICES_PER_GPU=7 ;;
-    MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.20gb"; SLICES_PER_GPU=3 ;;
-    MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.40gb"; SLICES_PER_GPU=2 ;;
-    MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.40gb"; SLICES_PER_GPU=1 ;;
-    MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.80gb"; SLICES_PER_GPU=1 ;;
-    *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
-  esac
-  TOTAL_SLICES=$((8 * SLICES_PER_GPU))
+  # Derive MIG resource name from MIG_MODE and GPU variant
+  # H100 SXM5 (ND-series) has 80GB → profiles: 1g.10gb, 2g.20gb, 3g.40gb, 4g.40gb, 7g.80gb
+  # H100 NVL  (NC-series) has 94GB → profiles: 1g.12gb, 2g.24gb, 3g.47gb, 4g.47gb, 7g.94gb
+  IS_NC_SERIES=false
+  [[ "$GPU_VM_SIZE" == Standard_NC* ]] && IS_NC_SERIES=true
+
+  if [[ "$IS_NC_SERIES" == "true" ]]; then
+    case "$MIG_MODE" in
+      MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.12gb"; SLICES_PER_GPU=7 ;;
+      MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.24gb"; SLICES_PER_GPU=3 ;;
+      MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.47gb"; SLICES_PER_GPU=2 ;;
+      MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.47gb"; SLICES_PER_GPU=1 ;;
+      MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.94gb"; SLICES_PER_GPU=1 ;;
+      *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+    esac
+  else
+    case "$MIG_MODE" in
+      MIG1g) MIG_RESOURCE="nvidia.com/mig-1g.10gb"; SLICES_PER_GPU=7 ;;
+      MIG2g) MIG_RESOURCE="nvidia.com/mig-2g.20gb"; SLICES_PER_GPU=3 ;;
+      MIG3g) MIG_RESOURCE="nvidia.com/mig-3g.40gb"; SLICES_PER_GPU=2 ;;
+      MIG4g) MIG_RESOURCE="nvidia.com/mig-4g.40gb"; SLICES_PER_GPU=1 ;;
+      MIG7g) MIG_RESOURCE="nvidia.com/mig-7g.80gb"; SLICES_PER_GPU=1 ;;
+      *)     error "Unknown MIG_MODE: $MIG_MODE"; exit 1 ;;
+    esac
+  fi
+  TOTAL_SLICES=$((GPUS_PER_NODE * SLICES_PER_GPU))
   TEAM_QUOTA=$((TOTAL_SLICES / 4))       # ~25% per team
+  [[ "$TEAM_QUOTA" -lt 1 ]] && TEAM_QUOTA=1  # ensure at least 1 slice per team
   SHARED_QUOTA=$((TOTAL_SLICES / 2))     # ~50% shared
+  [[ "$SHARED_QUOTA" -lt 1 ]] && SHARED_QUOTA=1
   info "MIG resource: ${MIG_RESOURCE}, ${TOTAL_SLICES} total slices, ${TEAM_QUOTA}/team, ${SHARED_QUOTA} shared"
 
   FLAVOR_NAME="h100-mig-$(echo "$MIG_MODE" | tr '[:upper:]' '[:lower:]')"
@@ -465,13 +541,15 @@ if [[ "$ENABLE_MONITORING" == "true" ]]; then
   helm repo update prometheus-community
 
   # 1. Install kube-prometheus-stack (must come first — provides ServiceMonitor CRDs)
+  PROM_STACK_VERSION="72.6.2"
   helm upgrade --install prometheus \
     prometheus-community/kube-prometheus-stack \
+    --version "$PROM_STACK_VERSION" \
     --namespace monitoring \
     --create-namespace \
     --values "${PROJECT_DIR}/monitoring/values-prometheus-stack.yaml" \
     --wait --timeout 300s
-  ok "kube-prometheus-stack installed"
+  ok "kube-prometheus-stack ${PROM_STACK_VERSION} installed"
 
   # 2. Upgrade GPU Operator to enable DCGM exporter ServiceMonitor
   helm upgrade gpu-operator nvidia/gpu-operator \

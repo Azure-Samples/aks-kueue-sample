@@ -7,6 +7,8 @@ metadata:
     kueue.x-k8s.io/queue-name: team-a-lq
     kueue.x-k8s.io/priority-class: low-priority
 spec:
+  # Timeout includes CIFAR-10 dataset download (~170MB) on first run
+  activeDeadlineSeconds: 900
   completions: 1
   parallelism: 1
   template:
@@ -20,9 +22,39 @@ spec:
           operator: Exists
           effect: NoSchedule
       containers:
-        - name: gpu-workload
-          image: nvidia/cuda:12.4.0-base-ubuntu22.04
-          command: ["bash", "-c", "nvidia-smi && sleep 600"]
+        - name: training
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import torch, torch.nn as nn, torch.optim as optim
+              import torchvision, torchvision.transforms as T
+              import time
+
+              torch.manual_seed(42)
+              print("=" * 60)
+              print("  Team A — MIG 3g.40gb — ResNet-18 CIFAR-10")
+              print(f"  Device: {torch.cuda.get_device_name(0)}")
+              print("=" * 60)
+
+              tfm = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(),
+                  T.ToTensor(), T.Normalize((0.4914,0.4822,0.4465),(0.2023,0.1994,0.2010))])
+              ds = torchvision.datasets.CIFAR10('/tmp/data', train=True, download=True, transform=tfm)
+              loader = torch.utils.data.DataLoader(ds, batch_size=128, shuffle=True, num_workers=0)
+
+              model = torchvision.models.resnet18(num_classes=10).cuda()
+              crit = nn.CrossEntropyLoss()
+              opt = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+
+              for ep in range(50):
+                  model.train(); loss_sum = correct = total = 0; t0 = time.time()
+                  for x, y in loader:
+                      x, y = x.cuda(), y.cuda()
+                      opt.zero_grad(); out = model(x); loss = crit(out, y)
+                      loss.backward(); opt.step()
+                      loss_sum += loss.item(); correct += out.max(1)[1].eq(y).sum().item(); total += y.size(0)
+                  print(f"Epoch {ep+1:3d}/50 | Loss {loss_sum/len(loader):.4f} | Acc {100*correct/total:.1f}% | {time.time()-t0:.1f}s")
+              print("Training complete!")
           resources:
             requests:
               nvidia.com/mig-3g.40gb: 1

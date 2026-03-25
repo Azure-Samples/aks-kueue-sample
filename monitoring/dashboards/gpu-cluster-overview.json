@@ -27,7 +27,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "avg by (namespace) (DCGM_FI_DEV_GPU_UTIL{namespace!=\"\"})",
           "legendFormat": "{{ namespace }}",
           "refId": "A"
@@ -39,50 +39,47 @@
       }
     },
     {
-      "title": "Queue Depth — Pending Workloads",
-      "description": "Number of pending workloads per ClusterQueue",
+      "title": "Pending Workloads per ClusterQueue",
+      "description": "Number of pending workloads per ClusterQueue (active + inadmissible)",
       "type": "timeseries",
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "min": 0,
+          "decimals": 0,
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 50,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "stacking": { "mode": "normal" }
           }
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "kueue_pending_workloads",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (cluster_queue) (kueue_pending_workloads)",
           "legendFormat": "{{ cluster_queue }}",
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "histogram_quantile(0.95, sum by (le, cluster_queue) (rate(kueue_admission_wait_time_seconds_bucket[5m])))",
-          "legendFormat": "p95 wait — {{ cluster_queue }}",
-          "refId": "B"
         }
       ],
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
         "tooltip": { "mode": "multi" }
       }
     },
     {
       "title": "Preemption Events",
-      "description": "Rate of preempted workloads per ClusterQueue over time",
+      "description": "Cumulative preempted workloads per ClusterQueue and reason",
       "type": "timeseries",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "short",
           "min": 0,
+          "decimals": 0,
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,
@@ -93,8 +90,8 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum by (preempting_cluster_queue, reason) (rate(kueue_preempted_workloads_total[5m]))",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (preempting_cluster_queue, reason) (increase(kueue_preempted_workloads_total[5m]))",
           "legendFormat": "{{ preempting_cluster_queue }} ({{ reason }})",
           "refId": "A"
         }
@@ -105,32 +102,66 @@
       }
     },
     {
-      "title": "GPU-Hours per Namespace",
-      "description": "Cumulative GPU-hours consumed per namespace (GPU utilization × time)",
+      "title": "Admission Wait Time (p95)",
+      "description": "95th percentile admission wait time per ClusterQueue",
       "type": "timeseries",
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
       "fieldConfig": {
         "defaults": {
-          "unit": "h",
+          "unit": "s",
           "min": 0,
           "custom": {
             "drawStyle": "line",
-            "fillOpacity": 30,
-            "lineWidth": 2
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 6,
+            "showPoints": "auto"
           }
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum by (namespace) (avg_over_time(DCGM_FI_DEV_GPU_UTIL{namespace!=\"\"}[$__range])) / 100 * $__range_s / 3600",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le, cluster_queue) (rate(kueue_admission_wait_time_seconds_bucket[5m])))",
+          "legendFormat": "p95 — {{ cluster_queue }}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "title": "Active GPUs per Namespace",
+      "description": "Number of GPUs in active use per namespace (utilization > 0%)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "lineWidth": 2,
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "count by (namespace) (DCGM_FI_DEV_GPU_UTIL{namespace!=\"\"} > 0)",
           "legendFormat": "{{ namespace }}",
           "refId": "A"
         }
       ],
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
         "tooltip": { "mode": "multi" }
       }
     }
@@ -143,7 +174,7 @@
         "current": {},
         "hide": 0,
         "includeAll": false,
-        "name": "DS_PROMETHEUS",
+        "name": "datasource",
         "query": "prometheus",
         "type": "datasource"
       }
